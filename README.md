@@ -10,3 +10,4 @@ font independent text analysis support for shaping and layout.
 - Paragraph level boundary analysis (word and line segmentation)
 - Script aware complex cluster parsing
 - Abstract iterative method for mapping cluster characters to nominal glyph identifiers
+- Basic locale parsing (BCP 47 language tags) with conversions to/from OpenType language tags
