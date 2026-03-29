@@ -6,3 +6,8 @@ edition = "2018"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
+parley_data = { git = "https://github.com/linebender/parley" }
+parlance = "0.1.0"
+icu_properties = "2.1.2"
+icu_segmenter = "2.1.2"
+icu_locale_core = "2.1.1"

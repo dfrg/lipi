@@ -2,16 +2,15 @@
 Font independent text analysis support for shaping and layout.
 */
 
-#![no_std]
+// #![no_std]
 
-// Avoid errors for generated Unicode data.
+extern crate alloc;
 
-mod compose;
+pub mod text;
 
-#[allow(clippy::upper_case_acronyms)]
-mod unicode_data;
+mod element;
+mod properties;
 
-pub mod cluster;
-pub mod locale;
-pub mod paragraph;
-pub mod unicode;
+pub use element::{Element, ElementHandle, ElementKind, SourceElement, SourceElementKind};
+pub use parlance::{Language, Script, WordBreak};
+pub use properties::LineBreak;
