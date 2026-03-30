@@ -9,14 +9,14 @@ use icu_properties::props::{BidiClass, BidiMirroringGlyph, BidiPairedBracketType
 /// Type alias for a bidirectional level.
 pub(crate) type BidiLevel = u8;
 
+type BracketEntry = (usize, char, BidiMirroringGlyph);
+
 /// Resolver for the Unicode bidirectional algorithm.
 #[derive(Clone, Default)]
 pub(crate) struct BidiResolver {
     base_level: BidiLevel,
     levels: Vec<BidiLevel>,
-    initial_types: Vec<BidiClass>,
     types: Vec<BidiClass>,
-    brackets: Vec<(usize, char, BidiMirroringGlyph)>,
     bracket_pairs: Vec<(usize, usize)>,
     runs: Vec<Run>,
     indices: Vec<usize>,
@@ -29,9 +29,7 @@ impl BidiResolver {
         Self {
             base_level: 0,
             levels: Vec::new(),
-            initial_types: Vec::new(),
             types: Vec::new(),
-            brackets: Vec::new(),
             bracket_pairs: Vec::new(),
             runs: Vec::new(),
             indices: Vec::new(),
@@ -52,10 +50,8 @@ impl BidiResolver {
 
     /// Clears the resolver state.
     pub(crate) fn clear(&mut self) {
-        self.initial_types.clear();
         self.levels.clear();
         self.types.clear();
-        self.brackets.clear();
         self.bracket_pairs.clear();
         self.flags = 0;
         self.base_level = 0;
@@ -65,34 +61,24 @@ impl BidiResolver {
     /// precomputed types.
     pub(crate) fn resolve(
         &mut self,
-        chars: impl Iterator<Item = (char, (BidiClass, BidiMirroringGlyph))>,
+        initial_types: &[BidiClass],
+        brackets: &[BracketEntry],
         base_level: Option<u8>,
     ) {
         self.clear();
-        let mut needs_bidi = false;
-        let mut len = 0;
-        for (i, (ch, (t, bracket))) in chars.enumerate() {
-            self.initial_types.push(t);
-
-            if bracket.paired_bracket_type != BidiPairedBracketType::None {
-                self.brackets.push((i, ch, bracket));
-            }
-
-            needs_bidi = needs_bidi || mask(t) & BIDI_MASK != 0;
-            len += 1;
-        }
         self.base_level = match base_level {
             Some(level) => level & 1,
-            _ => Self::default_level(&self.initial_types),
+            _ => Self::default_level(initial_types),
         };
-        if !needs_bidi && self.base_level == 0 {
-            self.flags |= 1;
-            self.levels.resize(len, self.base_level);
-            return;
-        }
-        self.types.extend_from_slice(&self.initial_types);
+        let len = initial_types.len();
+        // if !needs_bidi && self.base_level == 0 {
+        //     self.flags |= 1;
+        //     self.levels.resize(initial_types.len(), self.base_level);
+        //     return;
+        // }
+        self.types.extend_from_slice(initial_types);
         self.resolve_levels();
-        self.resolve_runs();
+        self.resolve_runs(initial_types);
         //self.dump_sequences();
         for i in 0..self.runs.len() {
             if self.runs[i].in_sequence {
@@ -119,14 +105,14 @@ impl BidiResolver {
                     None => break,
                 };
             }
-            self.resolve_sequence(level, sos, eos, self.indices.len());
+            self.resolve_sequence(initial_types, brackets, level, sos, eos, self.indices.len());
         }
         for i in 0..len {
-            let t = self.initial_types[i];
+            let t = initial_types[i];
             if t == BidiClass::SegmentSeparator || t == BidiClass::ParagraphSeparator {
                 self.levels[i] = self.base_level;
                 for j in (0..i).rev() {
-                    let t = self.initial_types[j];
+                    let t = initial_types[j];
                     if is_removed_by_x9(t) {
                         continue;
                     } else if t == BidiClass::WhiteSpace
@@ -147,19 +133,19 @@ impl BidiResolver {
                 //self.levels[i] = 0xFF;
             }
         }
-        for i in (0..len).rev() {
-            let t = self.initial_types[i];
-            if is_removed_by_x9(t) {
-                continue;
-            } else if t == BidiClass::WhiteSpace
-                || is_isolate_initiator(t)
-                || t == BidiClass::PopDirectionalIsolate
-            {
-                //self.levels[i] = self.base_level;
-            } else {
-                break;
-            }
-        }
+        // for i in (0..len).rev() {
+        //     let t = initial_types[i];
+        //     if is_removed_by_x9(t) {
+        //         continue;
+        //     } else if t == BidiClass::WhiteSpace
+        //         || is_isolate_initiator(t)
+        //         || t == BidiClass::PopDirectionalIsolate
+        //     {
+        //         //self.levels[i] = self.base_level;
+        //     } else {
+        //         break;
+        //     }
+        // }
     }
 
     fn default_level(types: &[BidiClass]) -> u8 {
@@ -306,7 +292,7 @@ impl BidiResolver {
         }
     }
 
-    fn resolve_runs(&mut self) {
+    fn resolve_runs(&mut self, initial_types: &[BidiClass]) {
         let len = self.types.len();
         self.runs.clear();
         let mut start = 0;
@@ -363,7 +349,7 @@ impl BidiResolver {
                 }
             }
             run.sos = type_from_level(prev_level.max(run.level));
-            if is_isolate_initiator(self.initial_types[run.end - 1]) {
+            if is_isolate_initiator(initial_types[run.end - 1]) {
                 run.ends_with_isolate = true;
                 run.eos = type_from_level(self.base_level.max(run.level));
             } else {
@@ -392,7 +378,15 @@ impl BidiResolver {
     }
 
     #[allow(clippy::needless_range_loop)]
-    fn resolve_sequence(&mut self, level: u8, sos: BidiClass, eos: BidiClass, len: usize) {
+    fn resolve_sequence(
+        &mut self,
+        initial_types: &[BidiClass],
+        brackets: &[BracketEntry],
+        level: u8,
+        sos: BidiClass,
+        eos: BidiClass,
+        len: usize,
+    ) {
         if len == 0 {
             return;
         }
@@ -406,7 +400,7 @@ impl BidiResolver {
         const W4_MASK: u32 = mask(BidiClass::EuropeanSeparator) | mask(BidiClass::CommonSeparator);
         let mut prev = sos;
         let mut prev_strong = prev;
-        let types = &mut self.types[self.initial_types.len()..];
+        let types = &mut self.types[initial_types.len()..];
         for i in 0..len {
             let mut t = types[i];
             let tmask = mask(t);
@@ -489,7 +483,7 @@ impl BidiResolver {
             }
         }
         // N0
-        if !self.brackets.is_empty() {
+        if !brackets.is_empty() {
             let base_brackets = self.bracket_pairs.len();
             let mut bracket_stack = BracketStack::new();
             for i in 0..len {
@@ -497,8 +491,8 @@ impl BidiResolver {
                     continue;
                 }
                 let index = self.indices[i];
-                if let Ok(index) = self.brackets.binary_search_by(|x| x.0.cmp(&index)) {
-                    let (_, ch, bracket) = self.brackets[index];
+                if let Ok(index) = brackets.binary_search_by(|x| x.0.cmp(&index)) {
+                    let (_, ch, bracket) = brackets[index];
                     match bracket.paired_bracket_type {
                         BidiPairedBracketType::Open => {
                             if bracket_stack.depth == MAX_BRACKET_STACK {
@@ -571,7 +565,7 @@ impl BidiResolver {
                     types[pair.1] = pair_dir;
                     for i in pair.0 + 1..pair.1 {
                         let index = self.indices[i];
-                        if self.initial_types[index] == BidiClass::NonspacingMark {
+                        if initial_types[index] == BidiClass::NonspacingMark {
                             types[i] = pair_dir;
                         } else {
                             break;
@@ -579,7 +573,7 @@ impl BidiResolver {
                     }
                     for i in pair.1 + 1..len {
                         let index = self.indices[i];
-                        if self.initial_types[index] == BidiClass::NonspacingMark {
+                        if initial_types[index] == BidiClass::NonspacingMark {
                             types[i] = pair_dir;
                         } else {
                             break;

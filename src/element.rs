@@ -25,10 +25,12 @@ pub enum SourceElementKind {
     EndSpan,
     /// Start bidirectional override.
     StartBidiOverride(BidiOverride),
+    /// End bidirectional override.
+    EndBidiOverride,
     /// Start bidirectional isolate.
-    StartBidiIsolate(BidiDirection),
-    /// End bidirectional override or isolate.
-    EndBidi,
+    PushBidiIsolate(BidiDirection),
+    /// End bidirectional isolate.
+    PopBidiIsolate,
     /// An element that prevents shaping across the neighboring elements.
     ///
     /// The typical use is to avoid shaping across visual boundaries such as
