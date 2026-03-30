@@ -10,9 +10,9 @@ use crate::properties::LineBreakOptions;
 use crate::{Language, LineBreak, Script, WordBreak};
 use core::ops::Range;
 
-pub use analysis::{Cluster, ClusterRange, ScriptBidiSegment, TextAnalysis};
+pub use analysis::{ScriptBidiSegment, TextAnalysis};
 pub use analyzer::TextAnalyzer;
-pub use cluster::{ClusterContent, ClusterFlags, WordKind};
+pub use cluster::{Cluster, ClusterContent, ClusterFlags, ClusterRange, WordKind};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct PendingCluster {
@@ -22,7 +22,7 @@ struct PendingCluster {
     script: Script,
 }
 
-/// Properties required for text analysis.
+/// Properties that control text analysis.
 #[derive(Copy, Clone, PartialEq, Eq, Default, Debug)]
 pub struct TextAnalysisProperties {
     /// The line-break property.
@@ -64,17 +64,19 @@ mod tests {
     fn analyze(text: &str, props: Option<TextAnalysisProperties>) -> TextAnalysis {
         let mut props = props.unwrap_or_default();
         let mut a = TextAnalysis::default();
-        TextAnalyzer::default().analyze(
-            text,
-            &mut props,
-            [SourceElement {
-                handle: ElementHandle::default(),
-                kind: SourceElementKind::Text(text.len()),
-            }]
-            .iter()
-            .copied(),
-            &mut a,
-        );
+        TextAnalyzer::default()
+            .analyze(
+                text,
+                &mut props,
+                [SourceElement {
+                    handle: ElementHandle::default(),
+                    kind: SourceElementKind::Text(text.len() as u32),
+                }]
+                .iter()
+                .copied(),
+                &mut a,
+            )
+            .unwrap();
         a
     }
 
@@ -113,21 +115,23 @@ mod tests {
     fn analyze_ex(text: &str, props: &[(TextAnalysisProperties, usize)]) -> TextAnalysis {
         let mut a = TextAnalysis::default();
         let mut prop_set = PropSet(props);
-        TextAnalyzer::default().analyze(
-            text,
-            &mut prop_set,
-            props
-                .iter()
-                .enumerate()
-                .map(|(i, (_props, len))| SourceElement {
-                    handle: ElementHandle {
-                        id: i as u64,
-                        context_id: 0,
-                    },
-                    kind: SourceElementKind::Text(*len),
-                }),
-            &mut a,
-        );
+        TextAnalyzer::default()
+            .analyze(
+                text,
+                &mut prop_set,
+                props
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_props, len))| SourceElement {
+                        handle: ElementHandle {
+                            id: i as u64,
+                            context_id: 0,
+                        },
+                        kind: SourceElementKind::Text(*len as u32),
+                    }),
+                &mut a,
+            )
+            .unwrap();
         a
     }
 
@@ -137,21 +141,23 @@ mod tests {
     ) -> TextAnalysis {
         let mut a = TextAnalysis::default();
         let mut prop_set = PropSet(props);
-        TextAnalyzer::default().analyze(
-            text,
-            &mut prop_set,
-            props
-                .iter()
-                .enumerate()
-                .map(|(i, (_props, el))| SourceElement {
-                    handle: ElementHandle {
-                        id: i as u64,
-                        context_id: 0,
-                    },
-                    kind: *el,
-                }),
-            &mut a,
-        );
+        TextAnalyzer::default()
+            .analyze(
+                text,
+                &mut prop_set,
+                props
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_props, el))| SourceElement {
+                        handle: ElementHandle {
+                            id: i as u64,
+                            context_id: 0,
+                        },
+                        kind: *el,
+                    }),
+                &mut a,
+            )
+            .unwrap();
         a
     }
 
@@ -300,7 +306,7 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::BreakShaping,
+                    SourceElementKind::BreakSegmentation,
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -314,7 +320,7 @@ mod tests {
 
     #[test]
     fn bidi_stuff() {
-        let text = "ab\u{0301}bcde";
+        let text = "a\u{0301}bcde";
         let ar = analyze_ex2(
             text,
             &[
@@ -381,7 +387,7 @@ fn dump_cluster(text: &str, cluster: &Cluster) {
         ClusterContent::NoBreakSpace => 'n',
         ClusterContent::OtherWhitespace => 'o',
     };
-    let line = if info.is_line_break_opportunity() {
+    let line = if info.can_break_line_after() {
         'L'
     } else {
         '_'
@@ -392,6 +398,7 @@ fn dump_cluster(text: &str, cluster: &Cluster) {
         Some(WordKind::Other) => 'o',
         None => '_',
     };
+    let rtl = if info.is_rtl() { '<' } else { ' ' };
     let count = cluster_text.chars().count();
-    println!("[{content} {line} {word}]:     {cluster_text:?} ({cluster_text}) ({count} chars) {replacement}");
+    println!("[{content} {line} {word} {rtl}]:     {cluster_text:?} ({cluster_text}) ({count} chars) {replacement}");
 }

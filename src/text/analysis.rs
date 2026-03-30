@@ -1,30 +1,10 @@
 //! Type to hold text analysis results.
 
-use super::{is_real_script, ClusterContent, ClusterFlags, PendingCluster};
+use super::{is_real_script, Cluster, ClusterContent, ClusterFlags, ClusterRange, PendingCluster};
 use crate::element::{Element, ObjectHandle};
 use crate::Script;
 use alloc::vec::Vec;
 use core::ops::Range;
-
-/// A synchronized range for text and clusters.
-#[derive(Clone, Default, Debug)]
-pub struct ClusterRange {
-    /// The range in the source text in code units.
-    pub text: Range<usize>,
-    /// The range in the cluster buffer.
-    pub clusters: Range<usize>,
-}
-
-/// A grapheme cluster.
-#[derive(Clone, Debug)]
-pub struct Cluster {
-    /// Cluster properties.
-    pub flags: ClusterFlags,
-    /// Range in the source text.
-    pub text_range: Range<usize>,
-    /// True if this cluster was replaced.
-    pub is_replaced: bool,
-}
 
 /// Results of text analysis.
 #[derive(Clone, Default)]
@@ -45,7 +25,7 @@ pub struct ScriptBidiSegment {
 
 impl TextAnalysis {
     /// Denotes that a cluster has been replaced by an object.
-    const REPLACEMENT: u8 = 0x1;
+    const REPLACEMENT: u32 = 0x1;
 }
 
 impl TextAnalysis {
@@ -73,10 +53,9 @@ impl TextAnalysis {
             .iter()
             .copied();
         flags.zip(ends).map(move |(flags, end)| {
-            let end = end as usize;
             let start = tracking_start;
-            let is_replaced = end & 0x1 != 0;
-            let end = end >> 2;
+            let is_replaced = end & Self::REPLACEMENT != 0;
+            let end = (end >> 2) as usize;
             tracking_start = end;
             Cluster {
                 flags,
@@ -109,9 +88,9 @@ impl TextAnalysis {
 
 impl TextAnalysis {
     pub(super) fn next_object(&mut self) -> ObjectHandle {
-        let handle = self.num_objects;
+        let idx = self.num_objects;
         self.num_objects += 1;
-        handle
+        ObjectHandle(idx as u32)
     }
 
     pub(super) fn push_element(&mut self, element: Element) {
@@ -133,7 +112,7 @@ impl TextAnalysis {
             .push((cluster.range.end as u32) << 2 | is_replaced as u32);
         if !is_replaced {
             let mut next = cluster.script;
-            if cluster.info.is_emoji() {
+            if cluster.info.is_emoji_or_symbol() {
                 next = match cluster.info.content() {
                     ClusterContent::Emoji => Script::from_bytes(*b"Zsye"),
                     _ => Script::from_bytes(*b"Zsym"),
@@ -182,6 +161,17 @@ impl TextAnalysis {
                     },
                 })
             }
+        }
+    }
+
+    pub(super) fn set_rtl(&mut self, range: &Range<usize>) {
+        for cluster in self
+            .cluster_flags
+            .get_mut(range.clone())
+            .unwrap_or_default()
+            .iter_mut()
+        {
+            cluster.set_rtl();
         }
     }
 }

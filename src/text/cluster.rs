@@ -1,35 +1,58 @@
 //! Cluster types for text analysis.
 
-use icu_properties::props::BinaryProperty;
-use icu_segmenter::options::WordType as IcuWordType;
+use core::ops::Range;
+use {icu_properties::props::BinaryProperty, icu_segmenter::options::WordType as IcuWordType};
 
-/// The content and segmentation properties of a cluster.
+/// A grapheme cluster.
+#[derive(Clone, Debug)]
+pub struct Cluster {
+    /// Cluster properties.
+    pub flags: ClusterFlags,
+    /// Range in the source text.
+    pub text_range: Range<usize>,
+    /// True if this cluster was replaced.
+    pub is_replaced: bool,
+}
+
+/// The content and segmentation state of a cluster.
 #[derive(Copy, Clone, PartialEq, Eq, Default, Debug)]
 #[repr(transparent)]
 pub struct ClusterFlags(u8);
 
 impl ClusterFlags {
+    /// Bits used for the content type.
     const CONTENT_MASK: u8 = 0b1111;
-    const LINE_BREAK_MASK: u8 = 0b0001_0000;
-    const WORD_KIND_MASK: u8 = 0b0110_0000;
-    const WORD_KIND_SHIFT: u8 = 5;
-}
 
-impl ClusterFlags {
+    /// Bit that stores line break state.
+    const LINE_BREAK_BIT: u8 = 0b0001_0000;
+
+    /// Bits used for the word type.
+    const WORD_KIND_MASK: u8 = 0b0110_0000;
+
+    /// Bit shift for the word type.
+    const WORD_KIND_SHIFT: u8 = Self::WORD_KIND_MASK.trailing_zeros() as u8;
+
+    /// Bit used to signify a right to left ordered cluster.
+    const RTL_BIT: u8 = 0b1000_0000;
+
     /// Returns the content type of the cluster.
     pub const fn content(self) -> ClusterContent {
         ClusterContent::from_bits(self.0 & Self::CONTENT_MASK)
     }
 
     /// Returns true if there is a line break opportunity _after_ this cluster.
-    pub const fn is_line_break_opportunity(self) -> bool {
-        self.0 & Self::LINE_BREAK_MASK != 0
+    pub const fn can_break_line_after(self) -> bool {
+        self.0 & Self::LINE_BREAK_BIT != 0
+    }
+
+    /// Returns true if this cluster is the end of a word.
+    pub const fn is_end_of_word(self) -> bool {
+        self.word_bits() != 0
     }
 
     /// Returns a word kind if this cluster represents the _end_ of a word.    
     pub const fn word_kind(self) -> Option<WordKind> {
-        let bits = (self.0 & Self::WORD_KIND_MASK) >> Self::WORD_KIND_SHIFT;
-        match bits & 0b11 {
+        match self.word_bits() {
             0 => None,
             1 => Some(WordKind::Letter),
             2 => Some(WordKind::Number),
@@ -38,9 +61,34 @@ impl ClusterFlags {
         }
     }
 
-    pub(super) const fn is_emoji(self) -> bool {
+    /// Returns true if this cluster is ordered left to right.
+    pub const fn is_ltr(self) -> bool {
+        !self.is_rtl()
+    }
+
+    /// Returns true if this cluster is ordered right to left.
+    pub const fn is_rtl(self) -> bool {
+        self.0 & Self::RTL_BIT != 0
+    }
+
+    /// Returns true if this cluster is an emoji or symbol.
+    pub const fn is_emoji_or_symbol(self) -> bool {
         let content = self.0 & Self::CONTENT_MASK;
         content == ClusterContent::Emoji as _ || content == ClusterContent::Symbol as _
+    }
+
+    /// Returns true if this cluster is any whitespace.
+    pub const fn is_whitespace(self) -> bool {
+        (self.0 & Self::CONTENT_MASK) >= ClusterContent::Space as _
+    }
+
+    /// Returns true if this cluster is a paragraph separator.
+    pub const fn is_paragraph_separator(self) -> bool {
+        (self.0 & Self::CONTENT_MASK) == ClusterContent::ParagraphSeparator as _
+    }
+
+    const fn word_bits(self) -> u8 {
+        ((self.0 & Self::WORD_KIND_MASK) >> Self::WORD_KIND_SHIFT) & 0b11
     }
 
     pub(super) fn set_content(&mut self, content: ClusterContent) {
@@ -48,11 +96,15 @@ impl ClusterFlags {
     }
 
     pub(super) fn set_line_break(&mut self) {
-        self.0 |= Self::LINE_BREAK_MASK;
+        self.0 |= Self::LINE_BREAK_BIT;
     }
 
     pub(super) fn set_word_kind(&mut self, kind: WordKind) {
         self.0 = self.0 & !Self::WORD_KIND_MASK | ((kind as u8 + 1) << Self::WORD_KIND_SHIFT);
+    }
+
+    pub(super) fn set_rtl(&mut self) {
+        self.0 |= Self::RTL_BIT;
     }
 
     pub(super) fn new(ch: char, char_props: parley_data::Properties) -> Self {
@@ -85,7 +137,7 @@ impl ClusterFlags {
     pub(super) fn update_content(&mut self, ch: char) {
         const EMOJI_PRESENTATION: char = '\u{FE0F}';
         const TEXT_PRESENTATION: char = '\u{FE0E}';
-        if self.is_emoji() {
+        if self.is_emoji_or_symbol() {
             if ch == EMOJI_PRESENTATION {
                 self.set_content(ClusterContent::Emoji);
             } else if ch == TEXT_PRESENTATION {
@@ -106,7 +158,7 @@ pub enum ClusterContent {
     Emoji = 1,
     /// Symbol or emoji with text presentation.
     Symbol = 2,
-    /// Flags.
+    /// Regional indicators or flag emojis.
     RegionalIndicator = 3,
     /// Basic space.
     Space = 4,
@@ -157,4 +209,13 @@ impl WordKind {
             _ => Self::Other,
         }
     }
+}
+
+/// A synchronized range for text and clusters.
+#[derive(Clone, Default, Debug)]
+pub struct ClusterRange {
+    /// The range in the source text in code units.
+    pub text: Range<usize>,
+    /// The range in the cluster buffer.
+    pub clusters: Range<usize>,
 }

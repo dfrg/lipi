@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use parlance::{BidiDirection, BidiOverride};
 
 /// A handle for an element.
@@ -13,16 +15,18 @@ pub struct ElementHandle {
 #[derive(Copy, Clone, Debug)]
 pub enum SourceElementKind {
     /// A sequence of characters of the given length.
-    Text(usize),
+    Text(u32),
     /// An inline object with direction and length.
     ///
     /// If the length is greater than 0 then the object *replaces* that
     /// range of the source text.
-    Object(BidiDirection, usize),
-    /// The start of a span.
-    StartSpan,
-    /// The end of a span.
-    EndSpan,
+    Object(BidiDirection, u32),
+    /// The start of a region with some arbitrary identifier.
+    StartSpan(u64),
+    /// The end of a region with some arbitrary identifier.
+    EndSpan(u64),
+    /// Marks a position with some arbitrary identifier.
+    Marker(u64),
     /// Start bidirectional override.
     PushBidiOverride(BidiOverride),
     /// End bidirectional override.
@@ -31,14 +35,12 @@ pub enum SourceElementKind {
     PushBidiIsolate(BidiDirection),
     /// End bidirectional isolate.
     PopBidiIsolate,
-    /// An element that prevents shaping across the neighboring elements.
+    /// Prevents segmentation and shaping across neighboring elements.
     ///
     /// The typical use is to avoid shaping across visual boundaries such as
     /// the start or end of a span that has non-zero borders, margin or
     /// padding.
-    BreakShaping,
-    /// An arbitrary marker element with some identifier.
-    Marker(u64),
+    BreakSegmentation,
 }
 
 impl Default for SourceElementKind {
@@ -57,23 +59,25 @@ pub struct SourceElement {
 }
 
 /// Handle for an inline object.
-pub type ObjectHandle = usize;
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[repr(transparent)]
+pub struct ObjectHandle(pub u32);
 
 /// The type of a processed element.
 #[derive(Copy, Clone, Debug)]
 pub enum ElementKind {
     /// A sequence of characters of the given length.
-    Text(usize),
+    Text(u32),
     /// An inline object with a handle and length.
     ///
     /// If the length is greater than 0 then the object *replaces* that
     /// range of the source text.
-    Object(ObjectHandle, usize),
-    /// The start of a span.
-    StartSpan,
-    /// The end of a span.
-    EndSpan,
-    /// An arbitrary marker element with some identifier.
+    Object(ObjectHandle, u32),
+    /// The start of a region with some arbitrary identifier.
+    StartSpan(u64),
+    /// The end of a region with some arbitrary identifier.
+    EndSpan(u64),
+    /// Marks a position with some arbitrary identifier.
     Marker(u64),
 }
 
@@ -85,7 +89,24 @@ pub struct Element {
     /// The type of the element.
     pub kind: ElementKind,
     /// The beginning of this element in the source text.
-    pub(crate) text_start: usize,
+    pub(crate) text_start: u32,
     /// True if we should break shaping after the previous element.
     pub(crate) break_shaping_before: bool,
+}
+
+impl Element {
+    /// Returns the text range for the element.
+    pub fn text_range(&self) -> Range<usize> {
+        let start = self.text_start as usize;
+        let len = match &self.kind {
+            ElementKind::Text(len) | ElementKind::Object(_, len) => *len,
+            _ => 0,
+        };
+        start..start + len as usize
+    }
+
+    /// Returns true if the element should break a shaping run.
+    pub fn break_shaping_before(&self) -> bool {
+        self.break_shaping_before
+    }
 }

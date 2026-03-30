@@ -6,13 +6,20 @@ use super::{
 };
 use crate::element::{Element, ElementKind, SourceElement, SourceElementKind};
 use crate::properties::script_from_icu;
-use crate::Script;
+use crate::{Script, MAX_TEXT_LEN};
 use alloc::vec::Vec;
 use icu_properties::props::{
     BidiClass, BidiMirroringGlyph, BidiPairedBracketType, EnumeratedProperty,
 };
 use icu_segmenter::options::WordBreakInvariantOptions;
 use parlance::{BidiDirection, BidiOverride};
+
+/// Erros that can occur during text analysis.
+#[derive(Clone, Debug)]
+pub enum TextAnalysisError {
+    /// The input text was larger than the maximum length.
+    TextExceedsMaxLen,
+}
 
 /// Context for text analysis.
 #[derive(Default)]
@@ -32,9 +39,12 @@ impl TextAnalyzer {
         property_provider: &mut impl TextAnalysisPropertiesProvider,
         mut elements: impl Iterator<Item = SourceElement>,
         analysis: &mut TextAnalysis,
-    ) {
+    ) -> Result<(), TextAnalysisError> {
         self.clear();
         analysis.clear();
+        if text.len() > MAX_TEXT_LEN {
+            return Err(TextAnalysisError::TextExceedsMaxLen);
+        }
         let grapheme_breaker = icu_segmenter::GraphemeClusterSegmenter::new();
         let word_breaker =
             icu_segmenter::WordSegmenter::new_auto(WordBreakInvariantOptions::default());
@@ -126,7 +136,7 @@ impl TextAnalyzer {
                                     Some((BidiClass::PopDirectionalIsolate, BidiItem::Control));
                                 true
                             }
-                            SourceElementKind::BreakShaping => {
+                            SourceElementKind::BreakSegmentation => {
                                 reset_grapheme_word_iters = true;
                                 reset_line_iter = true;
                                 true
@@ -227,6 +237,7 @@ impl TextAnalyzer {
             }
         }
         self.handle_bidi(text, analysis);
+        Ok(())
     }
 }
 
@@ -247,6 +258,7 @@ impl TextAnalyzer {
         analysis: &mut TextAnalysis,
         text_start: usize,
     ) -> Option<(SourceElement, TextAnalysisProperties, usize)> {
+        let text_start = text_start as u32;
         let element = elements.next()?;
         let properties = property_provider.text_analysis_properties(&element.handle);
         let break_shaping_before = self.break_shaping_before;
@@ -271,19 +283,19 @@ impl TextAnalyzer {
                 });
                 len
             }
-            SourceElementKind::StartSpan => {
+            SourceElementKind::StartSpan(id) => {
                 analysis.push_element(Element {
                     handle: element.handle,
-                    kind: ElementKind::StartSpan,
+                    kind: ElementKind::StartSpan(id),
                     text_start,
                     break_shaping_before,
                 });
                 0
             }
-            SourceElementKind::EndSpan => {
+            SourceElementKind::EndSpan(id) => {
                 analysis.push_element(Element {
                     handle: element.handle,
-                    kind: ElementKind::EndSpan,
+                    kind: ElementKind::EndSpan(id),
                     text_start,
                     break_shaping_before,
                 });
@@ -296,7 +308,7 @@ impl TextAnalyzer {
                 self.needs_bidi = true;
                 0
             }
-            SourceElementKind::BreakShaping => {
+            SourceElementKind::BreakSegmentation => {
                 self.break_shaping_before = true;
                 0
             }
@@ -310,7 +322,7 @@ impl TextAnalyzer {
                 0
             }
         };
-        Some((element, properties, len))
+        Some((element, properties, len as usize))
     }
 
     fn push_bidi_char(&mut self, ch: char, props: parley_data::Properties) {
@@ -403,6 +415,14 @@ impl TextAnalyzer {
                     }
                     range.text.start = range.text.end;
                     range.clusters.start = range.clusters.end;
+                }
+            }
+        }
+        core::mem::drop(clusters);
+        for segment in &segments {
+            if let BidiSegment::Text(level, range) = segment {
+                if *level & 1 != 0 {
+                    analysis.set_rtl(&range.clusters);
                 }
             }
         }
