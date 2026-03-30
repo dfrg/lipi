@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn bidi_stuff() {
-        let text = "a\u{0301}bcde";
+        let text = "ab\u{0301}bcde";
         let ar = analyze_ex2(
             text,
             &[
@@ -325,7 +325,8 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::PushBidiIsolate(parlance::BidiDirection::Rtl),
+                    // SourceElementKind::PushBidiIsolate(parlance::BidiDirection::Rtl),
+                    SourceElementKind::PushBidiOverride(parlance::BidiOverride::Rtl),
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -333,7 +334,8 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::PopBidiIsolate,
+                    SourceElementKind::PopBidiOverride,
+                    // SourceElementKind::PopBidiIsolate,
                 ),
                 (
                     TextAnalysisProperties::default(),

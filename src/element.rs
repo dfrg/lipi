@@ -24,9 +24,9 @@ pub enum SourceElementKind {
     /// The end of a span.
     EndSpan,
     /// Start bidirectional override.
-    StartBidiOverride(BidiOverride),
+    PushBidiOverride(BidiOverride),
     /// End bidirectional override.
-    EndBidiOverride,
+    PopBidiOverride,
     /// Start bidirectional isolate.
     PushBidiIsolate(BidiDirection),
     /// End bidirectional isolate.

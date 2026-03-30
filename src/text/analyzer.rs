@@ -99,7 +99,7 @@ impl TextAnalyzer {
                                 }
                                 flush_pending_cluster
                             }
-                            SourceElementKind::StartBidiOverride(dir) => {
+                            SourceElementKind::PushBidiOverride(dir) => {
                                 let class = match dir {
                                     BidiOverride::Ltr => BidiClass::LeftToRightOverride,
                                     BidiOverride::Rtl => BidiClass::RightToLeftOverride,
@@ -107,7 +107,7 @@ impl TextAnalyzer {
                                 pending_bidi = Some((class, BidiItem::Control));
                                 true
                             }
-                            SourceElementKind::EndBidiOverride => {
+                            SourceElementKind::PopBidiOverride => {
                                 pending_bidi =
                                     Some((BidiClass::PopDirectionalFormat, BidiItem::Control));
                                 true
@@ -162,6 +162,7 @@ impl TextAnalyzer {
                                 );
                             }
                             analysis.push_cluster(&pending_cluster, flush_replace);
+                            pending_cluster.base_char = ch;
                             pending_cluster.range.start = byte_idx;
                         }
                         if let Some((class, item)) = pending_bidi {
@@ -288,9 +289,9 @@ impl TextAnalyzer {
                 });
                 0
             }
-            SourceElementKind::StartBidiOverride(..)
+            SourceElementKind::PushBidiOverride(..)
             | SourceElementKind::PushBidiIsolate(..)
-            | SourceElementKind::EndBidiOverride
+            | SourceElementKind::PopBidiOverride
             | SourceElementKind::PopBidiIsolate => {
                 self.needs_bidi = true;
                 0
