@@ -78,8 +78,8 @@ impl TextAnalyzer {
             // Do we need to move on to the next element?
             if byte_idx >= element_end {
                 // Track whether we need to reset segmentation iterators
-                let mut reset_grapheme_word_iters = false;
                 let mut reset_line_iter = false;
+                let mut reset_grapheme_word_iters = false;
                 pending_cluster.range.end = byte_idx;
                 // We need to skip zero length elements and objects
                 loop {
@@ -88,26 +88,28 @@ impl TextAnalyzer {
                     {
                         element_start = element_end;
                         element_end = element_end.saturating_add(next_len);
+                        // Synthesized bidi control character
                         let mut pending_bidi = None;
                         let flush_replace = pending_replacement;
-                        let flush_pending = match next_element.kind {
+                        // Most elements flush the pending cluster so default to true
+                        let mut flush_pending = true;
+                        match next_element.kind {
                             SourceElementKind::Object(dir, _) => {
-                                reset_grapheme_word_iters = true;
+                                // Objects reset all iterators
                                 reset_line_iter = true;
-                                // Handle bidi
+                                reset_grapheme_word_iters = true;
                                 let class = match dir {
                                     BidiDirection::Auto => BidiClass::OtherNeutral,
                                     BidiDirection::Ltr => BidiClass::LeftToRight,
                                     BidiDirection::Rtl => BidiClass::RightToLeft,
                                 };
                                 pending_bidi = Some((class, BidiItem::Object));
-                                let flush_pending_cluster = !pending_replacement;
+                                flush_pending = !pending_replacement;
                                 // If the length is non-zero then the object
                                 // replaces the text
                                 if next_len > 0 {
                                     pending_replacement = true;
                                 }
-                                flush_pending_cluster
                             }
                             SourceElementKind::PushBidiOverride(dir) => {
                                 let class = match dir {
@@ -115,12 +117,10 @@ impl TextAnalyzer {
                                     BidiOverride::Rtl => BidiClass::RightToLeftOverride,
                                 };
                                 pending_bidi = Some((class, BidiItem::Control));
-                                true
                             }
                             SourceElementKind::PopBidiOverride => {
                                 pending_bidi =
                                     Some((BidiClass::PopDirectionalFormat, BidiItem::Control));
-                                true
                             }
                             SourceElementKind::PushBidiIsolate(dir) => {
                                 let class = match dir {
@@ -129,22 +129,20 @@ impl TextAnalyzer {
                                     BidiDirection::Rtl => BidiClass::RightToLeftIsolate,
                                 };
                                 pending_bidi = Some((class, BidiItem::Control));
-                                true
                             }
                             SourceElementKind::PopBidiIsolate => {
                                 pending_bidi =
                                     Some((BidiClass::PopDirectionalIsolate, BidiItem::Control));
-                                true
                             }
                             SourceElementKind::BreakSegmentation => {
-                                reset_grapheme_word_iters = true;
                                 reset_line_iter = true;
-                                true
+                                reset_grapheme_word_iters = true;
                             }
                             _ => {
                                 if next_len > 0 {
-                                    // Property changes and objects force a
-                                    // reset of segmentation iterators
+                                    // Reset the line iterator if we forced a
+                                    // grapheme/word reset or if the properties
+                                    // changed
                                     reset_line_iter =
                                         reset_grapheme_word_iters || properties != next_properties;
                                     properties = next_properties;
@@ -152,7 +150,7 @@ impl TextAnalyzer {
                                     // some characters
                                     break;
                                 }
-                                false
+                                flush_pending = false;
                             }
                         };
                         if flush_pending && !pending_cluster.range.is_empty() {
@@ -175,6 +173,8 @@ impl TextAnalyzer {
                             pending_cluster.base_char = ch;
                             pending_cluster.range.start = byte_idx;
                         }
+                        // Handle synthesized bidi control characters. This
+                        // must be done _after_ flushing the pending cluster
                         if let Some((class, item)) = pending_bidi {
                             self.bidi_classes.push(class);
                             self.bidi_items.push(item);
@@ -209,11 +209,13 @@ impl TextAnalyzer {
             // Now handle the next grapheme
             if graphemes.is_boundary(byte_idx) {
                 let mut cluster = pending_cluster.clone();
+                // Does it end a word?
                 if words.is_boundary(byte_idx) {
                     cluster
                         .info
                         .set_word_kind(WordKind::from_icu(words.iter.word_type()));
                 }
+                // Is it a line break opportunity?
                 if lines.is_boundary(byte_idx) {
                     cluster.info.set_line_break();
                 }
