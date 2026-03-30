@@ -1,9 +1,9 @@
 //! Text analysis context.
 
 use super::{
-    bidi, properties::script_from_icu, ClusterAnalysis, ClusterFlags, ClusterRange, PendingCluster,
-    SourceElement, SourceElementKind, TextAnalysisProperties, TextAnalysisPropertiesProvider,
-    WordKind,
+    bidi, properties::script_from_icu, ClusterAnalysis, ClusterAttributes, ClusterRange,
+    PendingCluster, SourceElement, SourceElementKind, TextAnalysisProperties,
+    TextAnalysisPropertiesProvider, WordKind,
 };
 use crate::{Element, ElementKind, Script, MAX_TEXT_LEN};
 use alloc::vec::Vec;
@@ -63,7 +63,7 @@ impl TextAnalyzer {
         let mut line_breaker = icu_segmenter::LineSegmenter::new_auto(line_options.get());
         let mut lines = BoundaryTracker::new(line_breaker.segment_str(text), 0);
         let mut pending_cluster = PendingCluster {
-            info: ClusterFlags::default(),
+            attrs: ClusterAttributes::default(),
             range: 0..0,
             script: Script::UNKNOWN,
             base_char: ' ',
@@ -161,7 +161,7 @@ impl TextAnalyzer {
                             // correct type
                             words.is_boundary(byte_idx);
                             pending_cluster
-                                .info
+                                .attrs
                                 .set_word_kind(WordKind::from_icu(words.iter.word_type()));
                             pending_cluster.range.end = byte_idx;
                             if !flush_replace {
@@ -213,16 +213,16 @@ impl TextAnalyzer {
                 // Does it end a word?
                 if words.is_boundary(byte_idx) {
                     cluster
-                        .info
+                        .attrs
                         .set_word_kind(WordKind::from_icu(words.iter.word_type()));
                 }
                 // Is it a line break opportunity?
                 if lines.is_boundary(byte_idx) {
-                    cluster.info.set_line_break();
+                    cluster.attrs.set_line_break();
                 }
                 cluster.range.end = byte_idx;
                 pending_cluster.range.start = byte_idx;
-                pending_cluster.info = ClusterFlags::new(ch, char_props);
+                pending_cluster.attrs = ClusterAttributes::new(ch, char_props);
                 pending_cluster.script = script_from_icu(char_props.script());
                 pending_cluster.base_char = ch;
                 if byte_idx > 0 && !cluster.range.is_empty() {
@@ -236,7 +236,7 @@ impl TextAnalyzer {
                     pending_replacement = false;
                 }
             } else {
-                pending_cluster.info.update_content(ch);
+                pending_cluster.attrs.update_content(ch);
             }
         }
         self.handle_bidi(text, analysis);

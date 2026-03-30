@@ -1,25 +1,39 @@
 //! Cluster types for text analysis.
 
-use core::ops::Range;
+use core::ops::{Deref, DerefMut, Range};
 use {icu_properties::props::BinaryProperty, icu_segmenter::options::WordType as IcuWordType};
 
 /// A grapheme cluster.
 #[derive(Clone, Debug)]
 pub struct Cluster {
     /// Cluster properties.
-    pub flags: ClusterFlags,
+    pub attributes: ClusterAttributes,
     /// Range in the source text.
     pub text_range: Range<usize>,
     /// True if this cluster was replaced.
     pub is_replaced: bool,
 }
 
+impl Deref for Cluster {
+    type Target = ClusterAttributes;
+
+    fn deref(&self) -> &Self::Target {
+        &self.attributes
+    }
+}
+
+impl DerefMut for Cluster {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.attributes
+    }
+}
+
 /// The content and segmentation state of a cluster.
 #[derive(Copy, Clone, PartialEq, Eq, Default, Debug)]
 #[repr(transparent)]
-pub struct ClusterFlags(u8);
+pub struct ClusterAttributes(u8);
 
-impl ClusterFlags {
+impl ClusterAttributes {
     /// Bits used for the content type.
     const CONTENT_MASK: u8 = 0b1111;
 

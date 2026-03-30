@@ -1,7 +1,8 @@
 //! Type to hold text analysis results.
 
 use super::{
-    is_real_script, BidiLevel, Cluster, ClusterContent, ClusterFlags, ClusterRange, PendingCluster,
+    is_real_script, BidiLevel, Cluster, ClusterAttributes, ClusterContent, ClusterRange,
+    PendingCluster,
 };
 use crate::element::{Element, ObjectHandle};
 use crate::Script;
@@ -74,7 +75,7 @@ pub struct Paragraph {
 /// Results of segmentation and classification of clusters.
 #[derive(Clone, Default)]
 pub struct ClusterAnalysis {
-    pub(super) flags: Vec<ClusterFlags>,
+    pub(super) flags: Vec<ClusterAttributes>,
     pub(super) ends: Vec<u32>,
     elements: Vec<Element>,
     pub(super) script_segments: Vec<ScriptBidiSegment>,
@@ -112,7 +113,7 @@ impl ClusterAnalysis {
         let is_replaced = end_with_flags & Self::REPLACEMENT != 0;
         let end = (end_with_flags >> 2) as usize;
         Some(Cluster {
-            flags,
+            attributes: flags,
             text_range: start..end,
             is_replaced,
         })
@@ -144,7 +145,7 @@ impl ClusterAnalysis {
             let end = (end >> 2) as usize;
             tracking_start = end;
             Cluster {
-                flags,
+                attributes: flags,
                 text_range: start..end,
                 is_replaced,
             }
@@ -194,13 +195,13 @@ impl ClusterAnalysis {
             return;
         }
         let cluster_start = self.flags.len();
-        self.flags.push(cluster.info);
+        self.flags.push(cluster.attrs);
         self.ends
             .push((cluster.range.end as u32) << 2 | is_replaced as u32);
         if !is_replaced {
             let mut next = cluster.script;
-            if cluster.info.is_emoji_or_symbol() {
-                next = match cluster.info.content() {
+            if cluster.attrs.is_emoji_or_symbol() {
+                next = match cluster.attrs.content() {
                     ClusterContent::Emoji => Script::from_bytes(*b"Zsye"),
                     _ => Script::from_bytes(*b"Zsym"),
                 };

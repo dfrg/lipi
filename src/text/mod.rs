@@ -15,14 +15,14 @@ use properties::LineBreakOptions;
 pub use analysis::{BidiAnalysis, BidiSegment, ClusterAnalysis, Paragraph, TextAnalysis};
 pub use analyzer::TextAnalyzer;
 pub use bidi::BidiLevel;
-pub use cluster::{Cluster, ClusterContent, ClusterFlags, ClusterRange, WordKind};
+pub use cluster::{Cluster, ClusterAttributes, ClusterContent, ClusterRange, WordKind};
 pub use element::{SourceElement, SourceElementKind};
 pub use parlance::{BidiDirection, BidiOverride, WordBreak};
 pub use properties::LineBreak;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct PendingCluster {
-    info: ClusterFlags,
+    attrs: ClusterAttributes,
     range: Range<usize>,
     base_char: char,
     script: Script,
@@ -376,13 +376,12 @@ mod tests {
 #[allow(unused)]
 fn dump_cluster(text: &str, cluster: &Cluster) {
     let cluster_text = &text[cluster.text_range.clone()];
-    let info = cluster.flags;
     let replacement = if cluster.is_replaced {
         " <replaced>"
     } else {
         ""
     };
-    let content = match info.content() {
+    let content = match cluster.content() {
         ClusterContent::Text => ' ',
         ClusterContent::Emoji => 'E',
         ClusterContent::Symbol => 'T',
@@ -393,18 +392,18 @@ fn dump_cluster(text: &str, cluster: &Cluster) {
         ClusterContent::NoBreakSpace => 'n',
         ClusterContent::OtherWhitespace => 'o',
     };
-    let line = if info.can_break_line_after() {
+    let line = if cluster.can_break_line_after() {
         'L'
     } else {
         '_'
     };
-    let word = match info.word_kind() {
+    let word = match cluster.word_kind() {
         Some(WordKind::Letter) => 'l',
         Some(WordKind::Number) => 'n',
         Some(WordKind::Other) => 'o',
         None => '_',
     };
-    let rtl = if info.is_rtl() { '<' } else { ' ' };
+    let rtl = if cluster.is_rtl() { '<' } else { ' ' };
     let count = cluster_text.chars().count();
     println!("[{content} {line} {word} {rtl}]:     {cluster_text:?} ({cluster_text}) ({count} chars) {replacement}");
 }
