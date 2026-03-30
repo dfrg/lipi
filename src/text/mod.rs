@@ -336,8 +336,8 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    // SourceElementKind::PushBidiIsolate(parlance::BidiDirection::Rtl),
-                    SourceElementKind::PushBidiOverride(parlance::BidiOverride::Rtl),
+                    SourceElementKind::PushBidiIsolate(parlance::BidiDirection::Rtl),
+                    // SourceElementKind::PushBidiOverride(parlance::BidiOverride::Rtl),
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -345,12 +345,20 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::PopBidiOverride,
-                    // SourceElementKind::PopBidiIsolate,
+                    SourceElementKind::Object(BidiDirection::Rtl, 0),
+                ),
+                (
+                    TextAnalysisProperties::default(),
+                    // SourceElementKind::PopBidiOverride,
+                    SourceElementKind::PopBidiIsolate,
                 ),
                 (
                     TextAnalysisProperties::default(),
                     SourceElementKind::Text(2),
+                ),
+                (
+                    TextAnalysisProperties::default(),
+                    SourceElementKind::BreakSegmentation,
                 ),
             ],
         );

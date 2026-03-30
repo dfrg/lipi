@@ -143,6 +143,9 @@ impl TextAnalyzer {
                             SourceElementKind::BreakSegmentation => {
                                 reset_line_iter = true;
                                 reset_grapheme_word_iters = true;
+                                // The break item won't push a class to the
+                                // actual value is irrelevant
+                                pending_bidi = Some((BidiClass::OtherNeutral, BidiItem::Break));
                             }
                             _ => {
                                 if next_len > 0 {
@@ -181,7 +184,9 @@ impl TextAnalyzer {
                         // Handle synthesized bidi control characters. This
                         // must be done _after_ flushing the pending cluster
                         if let Some((class, item)) = pending_bidi {
-                            self.bidi_classes.push(class);
+                            if !matches!(item, BidiItem::Break) {
+                                self.bidi_classes.push(class);
+                            }
                             self.bidi_items.push(item);
                         }
                     } else {
@@ -381,6 +386,7 @@ impl TextAnalyzer {
             .filter(|(_, cluster)| !cluster.is_replaced)
             .peekable();
         let mut range = ClusterRange::default();
+        let mut last_level = 0;
         // Loop over the bidi items
         for item in &self.bidi_items {
             match item {
@@ -423,6 +429,14 @@ impl TextAnalyzer {
                     }
                     range.text.start = range.text.end;
                     range.clusters.start = range.clusters.end;
+                    last_level = cur_level;
+                }
+                BidiItem::Break => {
+                    if !range.text.is_empty() {
+                        segments.push(BidiSegment::Text(last_level, range.clone()));
+                        range.text.start = range.text.end;
+                        range.clusters.start = range.clusters.end;
+                    }
                 }
             }
         }
@@ -444,6 +458,7 @@ enum BidiItem {
     Control,
     Object(ObjectHandle),
     Text(usize),
+    Break,
 }
 
 /// Helper for syncing boundary state tracking between
