@@ -1,18 +1,19 @@
 //! Text analysis context.
 
 use super::{
-    bidi, ClusterFlags, ClusterRange, PendingCluster, TextAnalysis, TextAnalysisProperties,
-    TextAnalysisPropertiesProvider, WordKind,
+    bidi, properties::script_from_icu, ClusterAnalysis, ClusterFlags, ClusterRange, PendingCluster,
+    SourceElement, SourceElementKind, TextAnalysisProperties, TextAnalysisPropertiesProvider,
+    WordKind,
 };
-use crate::element::{Element, ElementKind, SourceElement, SourceElementKind};
-use crate::properties::script_from_icu;
-use crate::{Script, MAX_TEXT_LEN};
+use crate::{Element, ElementKind, Script, MAX_TEXT_LEN};
 use alloc::vec::Vec;
-use icu_properties::props::{
-    BidiClass, BidiMirroringGlyph, BidiPairedBracketType, EnumeratedProperty,
-};
-use icu_segmenter::options::WordBreakInvariantOptions;
 use parlance::{BidiDirection, BidiOverride};
+use {
+    icu_properties::props::{
+        BidiClass, BidiMirroringGlyph, BidiPairedBracketType, EnumeratedProperty,
+    },
+    icu_segmenter::options::WordBreakInvariantOptions,
+};
 
 /// Erros that can occur during text analysis.
 #[derive(Clone, Debug)]
@@ -21,7 +22,7 @@ pub enum TextAnalysisError {
     TextExceedsMaxLen,
 }
 
-/// Context for text analysis.
+/// Context and scratch memory for text analysis.
 #[derive(Default)]
 pub struct TextAnalyzer {
     break_shaping_before: bool,
@@ -38,7 +39,7 @@ impl TextAnalyzer {
         text: &str,
         property_provider: &mut impl TextAnalysisPropertiesProvider,
         mut elements: impl Iterator<Item = SourceElement>,
-        analysis: &mut TextAnalysis,
+        analysis: &mut ClusterAnalysis,
     ) -> Result<(), TextAnalysisError> {
         self.clear();
         analysis.clear();
@@ -90,6 +91,7 @@ impl TextAnalyzer {
                         element_end = element_end.saturating_add(next_len);
                         // Synthesized bidi control character
                         let mut pending_bidi = None;
+                        // Save this since objects may modify it
                         let flush_replace = pending_replacement;
                         // Most elements flush the pending cluster so default to true
                         let mut flush_pending = true;
@@ -155,9 +157,8 @@ impl TextAnalyzer {
                         };
                         if flush_pending && !pending_cluster.range.is_empty() {
                             println!("flushing pending with range {:?}", pending_cluster.range);
-                            // Advance the word iterator and update the
-                            // kind before flushing the cluster. An inline
-                            // object always breaks words
+                            // Advance the word iterator so we capture the
+                            // correct type
                             words.is_boundary(byte_idx);
                             pending_cluster
                                 .info
@@ -257,7 +258,7 @@ impl TextAnalyzer {
         &mut self,
         property_provider: &mut impl TextAnalysisPropertiesProvider,
         elements: &mut impl Iterator<Item = SourceElement>,
-        analysis: &mut TextAnalysis,
+        analysis: &mut ClusterAnalysis,
         text_start: usize,
     ) -> Option<(SourceElement, TextAnalysisProperties, usize)> {
         let text_start = text_start as u32;
@@ -344,7 +345,7 @@ impl TextAnalyzer {
         }
     }
 
-    fn handle_bidi(&mut self, text: &str, analysis: &mut TextAnalysis) {
+    fn handle_bidi(&mut self, text: &str, analysis: &mut ClusterAnalysis) {
         if true {
             //self.needs_bidi {
             self.bidi
@@ -364,13 +365,13 @@ impl TextAnalyzer {
     fn apply_bidi(
         &self,
         text: &str,
-        analysis: &mut TextAnalysis,
+        analysis: &mut ClusterAnalysis,
         mut levels: impl Iterator<Item = u8>,
     ) -> Option<()> {
         let mut segments: Vec<BidiSegment> = Vec::new();
         // Filter replacement clusters
         let mut clusters = analysis
-            .clusters()
+            .iter()
             .enumerate()
             .filter(|(_, cluster)| !cluster.is_replaced)
             .peekable();
@@ -412,7 +413,7 @@ impl TextAnalyzer {
                         range.clusters.end = clusters
                             .peek()
                             .map(|(idx, _)| *idx)
-                            .unwrap_or(analysis.num_clusters());
+                            .unwrap_or(analysis.len());
                         segments.push(BidiSegment::Text(cur_level, range.clone()));
                     }
                     range.text.start = range.text.end;

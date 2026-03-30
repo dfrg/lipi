@@ -4,15 +4,21 @@ mod analysis;
 mod analyzer;
 mod bidi;
 mod cluster;
+mod element;
+mod properties;
 
 use crate::element::ElementHandle;
-use crate::properties::LineBreakOptions;
-use crate::{Language, LineBreak, Script, WordBreak};
+use crate::{Language, Script};
 use core::ops::Range;
+use properties::LineBreakOptions;
 
-pub use analysis::{ScriptBidiSegment, TextAnalysis};
+pub use analysis::{BidiAnalysis, BidiSegment, ClusterAnalysis, Paragraph, TextAnalysis};
 pub use analyzer::TextAnalyzer;
+pub use bidi::BidiLevel;
 pub use cluster::{Cluster, ClusterContent, ClusterFlags, ClusterRange, WordKind};
+pub use element::{SourceElement, SourceElementKind};
+pub use parlance::{BidiDirection, BidiOverride, WordBreak};
+pub use properties::LineBreak;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct PendingCluster {
@@ -61,9 +67,9 @@ mod tests {
     use super::*;
     use crate::element::*;
 
-    fn analyze(text: &str, props: Option<TextAnalysisProperties>) -> TextAnalysis {
+    fn analyze(text: &str, props: Option<TextAnalysisProperties>) -> ClusterAnalysis {
         let mut props = props.unwrap_or_default();
-        let mut a = TextAnalysis::default();
+        let mut a = ClusterAnalysis::default();
         TextAnalyzer::default()
             .analyze(
                 text,
@@ -104,7 +110,7 @@ mod tests {
             .chain(core::iter::repeat('\u{0301}').take(40))
             .collect::<String>();
         let an = analyze(text, None);
-        let clusters = an.clusters().collect::<Vec<_>>();
+        let clusters = an.iter().collect::<Vec<_>>();
         // println!("{:?}", an.clusters);
         println!("{clusters:?}");
         for cluster in &clusters {
@@ -112,8 +118,8 @@ mod tests {
         }
     }
 
-    fn analyze_ex(text: &str, props: &[(TextAnalysisProperties, usize)]) -> TextAnalysis {
-        let mut a = TextAnalysis::default();
+    fn analyze_ex(text: &str, props: &[(TextAnalysisProperties, usize)]) -> ClusterAnalysis {
+        let mut a = ClusterAnalysis::default();
         let mut prop_set = PropSet(props);
         TextAnalyzer::default()
             .analyze(
@@ -138,8 +144,8 @@ mod tests {
     fn analyze_ex2(
         text: &str,
         props: &[(TextAnalysisProperties, SourceElementKind)],
-    ) -> TextAnalysis {
-        let mut a = TextAnalysis::default();
+    ) -> ClusterAnalysis {
+        let mut a = ClusterAnalysis::default();
         let mut prop_set = PropSet(props);
         TextAnalyzer::default()
             .analyze(
@@ -190,7 +196,7 @@ mod tests {
                 mk_props(WordBreak::Normal, 100),
             ],
         );
-        let clusters = an.clusters().collect::<Vec<_>>();
+        let clusters = an.iter().collect::<Vec<_>>();
         for cluster in &clusters {
             dump_cluster(text, cluster);
         }
@@ -352,15 +358,15 @@ mod tests {
         dump_analysis(text, &ar);
     }
 
-    fn dump_analysis(text: &str, analysis: &TextAnalysis) {
-        for cluster in analysis.clusters() {
+    fn dump_analysis(text: &str, analysis: &ClusterAnalysis) {
+        for cluster in analysis.iter() {
             dump_cluster(text, &cluster);
         }
         println!("");
         for ss in &analysis.script_segments {
             println!("[{}] {}", ss.script, &text[ss.range.text.clone()]);
             println!("{ss:?}");
-            for cluster in analysis.clusters_for_range(&ss.range) {
+            for cluster in analysis.iter_range(&ss.range) {
                 dump_cluster(text, &cluster);
             }
         }

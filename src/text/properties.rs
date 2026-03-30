@@ -1,12 +1,11 @@
-//! Extra properties and conversions.
-
-// TODO: add this to parlance
+//! Text analysis properties.
 
 /// Defines the "strictness" of line breaking.
 ///
 /// Each variant has the same meaning with respect to the `line-break`
 /// property values in the CSS Text spec. See the details in
 /// <https://drafts.csswg.org/css-text-3/#line-break-property>.
+// TODO: add this to parlance
 #[derive(Copy, Clone, PartialEq, Eq, Default, Debug)]
 pub enum LineBreak {
     /// Breaks text using the least restrictive set of line-breaking rules.

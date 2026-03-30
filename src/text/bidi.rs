@@ -6,8 +6,8 @@
 use alloc::vec::Vec;
 use icu_properties::props::{BidiClass, BidiMirroringGlyph, BidiPairedBracketType};
 
-/// Type alias for a bidirectional level.
-pub(crate) type BidiLevel = u8;
+/// Type for a bidirectional level.
+pub type BidiLevel = u8;
 
 type BracketEntry = (usize, char, BidiMirroringGlyph);
 

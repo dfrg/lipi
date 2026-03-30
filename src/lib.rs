@@ -9,11 +9,9 @@ extern crate alloc;
 pub mod text;
 
 mod element;
-mod properties;
 
-pub use element::{Element, ElementHandle, ElementKind, SourceElement, SourceElementKind};
-pub use parlance::{Language, Script, WordBreak};
-pub use properties::LineBreak;
+pub use element::{Element, ElementHandle, ElementKind, ObjectHandle};
+pub use parlance::{Language, Script};
 
 /// Maximum length of text supported by analysis passes.
 ///
