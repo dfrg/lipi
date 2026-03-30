@@ -1,6 +1,4 @@
-use std::ops::Range;
-
-use parlance::{BidiDirection, BidiOverride};
+use core::ops::Range;
 
 /// A handle for an element.
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Debug)]

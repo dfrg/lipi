@@ -39,9 +39,18 @@ pub struct BidiAnalysis {
 }
 
 impl BidiAnalysis {
+    /// Returns the underlying segments.
+    pub fn segments(&self) -> &[BidiSegment] {
+        &self.segments
+    }
+
     /// Clears the analysis results.
     pub fn clear(&mut self) {
         self.segments.clear();
+    }
+
+    pub(super) fn push(&mut self, segment: BidiSegment) {
+        self.segments.push(segment);
     }
 }
 
@@ -77,7 +86,6 @@ pub struct Paragraph {
 pub struct ClusterAnalysis {
     pub(super) flags: Vec<ClusterAttributes>,
     pub(super) ends: Vec<u32>,
-    elements: Vec<Element>,
     pub(super) script_segments: Vec<ScriptBidiSegment>,
     num_objects: usize,
 }
@@ -156,7 +164,6 @@ impl ClusterAnalysis {
     pub fn clear(&mut self) {
         self.flags.clear();
         self.ends.clear();
-        self.elements.clear();
         self.script_segments.clear();
         self.num_objects = 0;
     }
@@ -181,11 +188,7 @@ impl ClusterAnalysis {
         ObjectHandle(idx as u32)
     }
 
-    pub(super) fn push_element(&mut self, element: Element) {
-        self.elements.push(element);
-    }
-
-    pub(super) fn push_cluster(&mut self, cluster: &PendingCluster, is_replaced: bool) {
+    pub(super) fn push(&mut self, cluster: &PendingCluster, is_replaced: bool) {
         println!(
             "pushing cluster with char {:?}, text {:?}, replaced: {is_replaced:}",
             cluster.base_char,

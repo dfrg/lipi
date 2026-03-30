@@ -67,9 +67,9 @@ mod tests {
     use super::*;
     use crate::element::*;
 
-    fn analyze(text: &str, props: Option<TextAnalysisProperties>) -> ClusterAnalysis {
+    fn analyze(text: &str, props: Option<TextAnalysisProperties>) -> TextAnalysis {
         let mut props = props.unwrap_or_default();
-        let mut a = ClusterAnalysis::default();
+        let mut a = TextAnalysis::default();
         TextAnalyzer::default()
             .analyze(
                 text,
@@ -110,7 +110,7 @@ mod tests {
             .chain(core::iter::repeat('\u{0301}').take(40))
             .collect::<String>();
         let an = analyze(text, None);
-        let clusters = an.iter().collect::<Vec<_>>();
+        let clusters = an.cluster.iter().collect::<Vec<_>>();
         // println!("{:?}", an.clusters);
         println!("{clusters:?}");
         for cluster in &clusters {
@@ -118,8 +118,8 @@ mod tests {
         }
     }
 
-    fn analyze_ex(text: &str, props: &[(TextAnalysisProperties, usize)]) -> ClusterAnalysis {
-        let mut a = ClusterAnalysis::default();
+    fn analyze_ex(text: &str, props: &[(TextAnalysisProperties, usize)]) -> TextAnalysis {
+        let mut a = TextAnalysis::default();
         let mut prop_set = PropSet(props);
         TextAnalyzer::default()
             .analyze(
@@ -144,8 +144,8 @@ mod tests {
     fn analyze_ex2(
         text: &str,
         props: &[(TextAnalysisProperties, SourceElementKind)],
-    ) -> ClusterAnalysis {
-        let mut a = ClusterAnalysis::default();
+    ) -> TextAnalysis {
+        let mut a = TextAnalysis::default();
         let mut prop_set = PropSet(props);
         TextAnalyzer::default()
             .analyze(
@@ -196,7 +196,7 @@ mod tests {
                 mk_props(WordBreak::Normal, 100),
             ],
         );
-        let clusters = an.iter().collect::<Vec<_>>();
+        let clusters = an.cluster.iter().collect::<Vec<_>>();
         for cluster in &clusters {
             dump_cluster(text, cluster);
         }
@@ -358,15 +358,15 @@ mod tests {
         dump_analysis(text, &ar);
     }
 
-    fn dump_analysis(text: &str, analysis: &ClusterAnalysis) {
-        for cluster in analysis.iter() {
+    fn dump_analysis(text: &str, analysis: &TextAnalysis) {
+        for cluster in analysis.cluster.iter() {
             dump_cluster(text, &cluster);
         }
         println!("");
-        for ss in &analysis.script_segments {
+        for ss in &analysis.cluster.script_segments {
             println!("[{}] {}", ss.script, &text[ss.range.text.clone()]);
             println!("{ss:?}");
-            for cluster in analysis.iter_range(&ss.range) {
+            for cluster in analysis.cluster.iter_range(&ss.range) {
                 dump_cluster(text, &cluster);
             }
         }

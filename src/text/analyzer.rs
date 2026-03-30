@@ -1,11 +1,11 @@
 //! Text analysis context.
 
 use super::{
-    bidi, properties::script_from_icu, ClusterAnalysis, ClusterAttributes, ClusterRange,
-    PendingCluster, SourceElement, SourceElementKind, TextAnalysisProperties,
+    bidi, properties::script_from_icu, BidiSegment, ClusterAttributes, ClusterRange,
+    PendingCluster, SourceElement, SourceElementKind, TextAnalysis, TextAnalysisProperties,
     TextAnalysisPropertiesProvider, WordKind,
 };
-use crate::{Element, ElementKind, Script, MAX_TEXT_LEN};
+use crate::{Element, ElementKind, ObjectHandle, Script, MAX_TEXT_LEN};
 use alloc::vec::Vec;
 use parlance::{BidiDirection, BidiOverride};
 use {
@@ -31,6 +31,7 @@ pub struct TextAnalyzer {
     bidi_classes: Vec<BidiClass>,
     bidi_brackets: Vec<(usize, char, BidiMirroringGlyph)>,
     bidi_items: Vec<BidiItem>,
+    num_objects: u32,
 }
 
 impl TextAnalyzer {
@@ -39,7 +40,7 @@ impl TextAnalyzer {
         text: &str,
         property_provider: &mut impl TextAnalysisPropertiesProvider,
         mut elements: impl Iterator<Item = SourceElement>,
-        analysis: &mut ClusterAnalysis,
+        analysis: &mut TextAnalysis,
     ) -> Result<(), TextAnalysisError> {
         self.clear();
         analysis.clear();
@@ -105,7 +106,10 @@ impl TextAnalyzer {
                                     BidiDirection::Ltr => BidiClass::LeftToRight,
                                     BidiDirection::Rtl => BidiClass::RightToLeft,
                                 };
-                                pending_bidi = Some((class, BidiItem::Object));
+                                pending_bidi = Some((
+                                    class,
+                                    BidiItem::Object(ObjectHandle(self.num_objects - 1)),
+                                ));
                                 flush_pending = !pending_replacement;
                                 // If the length is non-zero then the object
                                 // replaces the text
@@ -170,7 +174,7 @@ impl TextAnalyzer {
                                     parley_data::Properties::get(pending_cluster.base_char),
                                 );
                             }
-                            analysis.push_cluster(&pending_cluster, flush_replace);
+                            analysis.cluster.push(&pending_cluster, flush_replace);
                             pending_cluster.base_char = ch;
                             pending_cluster.range.start = byte_idx;
                         }
@@ -232,14 +236,14 @@ impl TextAnalyzer {
                             parley_data::Properties::get(cluster.base_char),
                         );
                     }
-                    analysis.push_cluster(&cluster, pending_replacement);
+                    analysis.cluster.push(&cluster, pending_replacement);
                     pending_replacement = false;
                 }
             } else {
                 pending_cluster.attrs.update_content(ch);
             }
         }
-        self.handle_bidi(text, analysis);
+        self.handle_bidi(analysis);
         Ok(())
     }
 }
@@ -252,13 +256,14 @@ impl TextAnalyzer {
         self.bidi_classes.clear();
         self.bidi_brackets.clear();
         self.bidi_items.clear();
+        self.num_objects = 0;
     }
 
     fn next_element(
         &mut self,
         property_provider: &mut impl TextAnalysisPropertiesProvider,
         elements: &mut impl Iterator<Item = SourceElement>,
-        analysis: &mut ClusterAnalysis,
+        analysis: &mut TextAnalysis,
         text_start: usize,
     ) -> Option<(SourceElement, TextAnalysisProperties, usize)> {
         let text_start = text_start as u32;
@@ -268,7 +273,7 @@ impl TextAnalyzer {
         self.break_shaping_before = false;
         let len = match element.kind {
             SourceElementKind::Text(len) => {
-                analysis.push_element(Element {
+                analysis.elements.push(Element {
                     handle: element.handle,
                     kind: ElementKind::Text(len),
                     text_start,
@@ -277,8 +282,9 @@ impl TextAnalyzer {
                 len
             }
             SourceElementKind::Object(_dir, len) => {
-                let object_handle = analysis.next_object();
-                analysis.push_element(Element {
+                let object_handle = ObjectHandle(self.num_objects);
+                self.num_objects += 1;
+                analysis.elements.push(Element {
                     handle: element.handle,
                     kind: ElementKind::Object(object_handle, len),
                     text_start,
@@ -287,7 +293,7 @@ impl TextAnalyzer {
                 len
             }
             SourceElementKind::StartSpan(id) => {
-                analysis.push_element(Element {
+                analysis.elements.push(Element {
                     handle: element.handle,
                     kind: ElementKind::StartSpan(id),
                     text_start,
@@ -296,7 +302,7 @@ impl TextAnalyzer {
                 0
             }
             SourceElementKind::EndSpan(id) => {
-                analysis.push_element(Element {
+                analysis.elements.push(Element {
                     handle: element.handle,
                     kind: ElementKind::EndSpan(id),
                     text_start,
@@ -316,7 +322,7 @@ impl TextAnalyzer {
                 0
             }
             SourceElementKind::Marker(id) => {
-                analysis.push_element(Element {
+                analysis.elements.push(Element {
                     handle: element.handle,
                     kind: ElementKind::Marker(id),
                     text_start,
@@ -345,17 +351,16 @@ impl TextAnalyzer {
         }
     }
 
-    fn handle_bidi(&mut self, text: &str, analysis: &mut ClusterAnalysis) {
+    fn handle_bidi(&mut self, analysis: &mut TextAnalysis) {
         if true {
             //self.needs_bidi {
             self.bidi
                 .resolve(&self.bidi_classes, &self.bidi_brackets, None);
             println!("bidi_classes = {:?}", self.bidi_classes);
             println!("bidi_levels = {:?}", self.bidi.levels());
-            self.apply_bidi(text, analysis, self.bidi.levels().iter().copied());
+            self.apply_bidi(analysis, self.bidi.levels().iter().copied());
         } else {
             self.apply_bidi(
-                text,
                 analysis,
                 core::iter::repeat(0).take(self.bidi_classes.len()),
             );
@@ -364,13 +369,13 @@ impl TextAnalyzer {
 
     fn apply_bidi(
         &self,
-        text: &str,
-        analysis: &mut ClusterAnalysis,
+        analysis: &mut TextAnalysis,
         mut levels: impl Iterator<Item = u8>,
     ) -> Option<()> {
-        let mut segments: Vec<BidiSegment> = Vec::new();
+        let segments = &mut analysis.bidi;
         // Filter replacement clusters
         let mut clusters = analysis
+            .cluster
             .iter()
             .enumerate()
             .filter(|(_, cluster)| !cluster.is_replaced)
@@ -384,9 +389,9 @@ impl TextAnalyzer {
                     // representation otherwise so just eat the level
                     let _ = levels.next();
                 }
-                BidiItem::Object => {
+                BidiItem::Object(handle) => {
                     // We only care about the level
-                    segments.push(BidiSegment::Object(levels.next()?));
+                    segments.push(BidiSegment::Object(levels.next()?, *handle));
                 }
                 BidiItem::Text(count) => {
                     // This is the count of clusters, so sync up while skipping
@@ -413,7 +418,7 @@ impl TextAnalyzer {
                         range.clusters.end = clusters
                             .peek()
                             .map(|(idx, _)| *idx)
-                            .unwrap_or(analysis.len());
+                            .unwrap_or(analysis.cluster.len());
                         segments.push(BidiSegment::Text(cur_level, range.clone()));
                     }
                     range.text.start = range.text.end;
@@ -422,30 +427,22 @@ impl TextAnalyzer {
             }
         }
         core::mem::drop(clusters);
-        for segment in &segments {
+        for segment in segments.segments() {
             if let BidiSegment::Text(level, range) = segment {
                 if *level & 1 != 0 {
-                    analysis.set_rtl(&range.clusters);
+                    analysis.cluster.set_rtl(&range.clusters);
                 }
             }
         }
-        println!("bidi_segments: {segments:?}");
+        println!("bidi_segments: {:?}", segments.segments());
         Some(())
     }
 }
 
 #[derive(Clone, Debug)]
-pub enum BidiSegment {
-    /// The level and cluster range.
-    Text(u8, ClusterRange),
-    /// Just the level.
-    Object(u8),
-}
-
-#[derive(Clone, Debug)]
 enum BidiItem {
     Control,
-    Object,
+    Object(ObjectHandle),
     Text(usize),
 }
 
