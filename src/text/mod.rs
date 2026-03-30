@@ -10,10 +10,9 @@ use crate::properties::LineBreakOptions;
 use crate::{Language, LineBreak, Script, WordBreak};
 use core::ops::Range;
 
-pub use analysis::{ClusterRange, ScriptBidiSegment, TextAnalysis};
+pub use analysis::{Cluster, ClusterRange, ScriptBidiSegment, TextAnalysis};
 pub use analyzer::TextAnalyzer;
 pub use cluster::{ClusterContent, ClusterFlags, WordKind};
-use icu_properties::props::BidiClass;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 struct PendingCluster {
@@ -103,8 +102,8 @@ mod tests {
             .chain(core::iter::repeat('\u{0301}').take(40))
             .collect::<String>();
         let an = analyze(text, None);
-        let clusters = an.cluster_ranges().collect::<Vec<_>>();
-        println!("{:?}", an.clusters);
+        let clusters = an.clusters().collect::<Vec<_>>();
+        // println!("{:?}", an.clusters);
         println!("{clusters:?}");
         for cluster in &clusters {
             dump_cluster(text, cluster);
@@ -185,7 +184,7 @@ mod tests {
                 mk_props(WordBreak::Normal, 100),
             ],
         );
-        let clusters = an.cluster_ranges().collect::<Vec<_>>();
+        let clusters = an.clusters().collect::<Vec<_>>();
         for cluster in &clusters {
             dump_cluster(text, cluster);
         }
@@ -261,7 +260,7 @@ mod tests {
                 ),
             ],
         );
-        println!("{:?}", &ar.clusters);
+        // println!("{:?}", &ar.clusters);
         dump_analysis(text, &ar);
     }
 
@@ -285,7 +284,7 @@ mod tests {
                 ),
             ],
         );
-        println!("{:?}", &ar.clusters);
+        // println!("{:?}", &ar.clusters);
         dump_analysis(text, &ar);
     }
 
@@ -309,7 +308,7 @@ mod tests {
                 ),
             ],
         );
-        println!("{:?}", &ar.clusters);
+        // println!("{:?}", &ar.clusters);
         dump_analysis(text, &ar);
     }
 
@@ -343,19 +342,19 @@ mod tests {
                 ),
             ],
         );
-        println!("{:?}", &ar.clusters);
+        // println!("{:?}", &ar.clusters);
         dump_analysis(text, &ar);
     }
 
     fn dump_analysis(text: &str, analysis: &TextAnalysis) {
-        // for cluster in analysis.cluster_ranges() {
-        //     dump_cluster(text, &cluster);
-        // }
-        // println!("");
+        for cluster in analysis.clusters() {
+            dump_cluster(text, &cluster);
+        }
+        println!("");
         for ss in &analysis.script_segments {
-            println!("[{}] {}", ss.script, &text[ss.text_range.clone()]);
+            println!("[{}] {}", ss.script, &text[ss.range.text.clone()]);
             println!("{ss:?}");
-            for cluster in analysis.cluster_ranges_for_segment(&ss) {
+            for cluster in analysis.clusters_for_range(&ss.range) {
                 dump_cluster(text, &cluster);
             }
         }
@@ -363,10 +362,14 @@ mod tests {
 }
 
 #[allow(unused)]
-fn dump_cluster(text: &str, cluster: &(ClusterFlags, Range<usize>, bool)) {
-    let cluster_text = &text[cluster.1.clone()];
-    let info = cluster.0;
-    let replacement = if cluster.2 { " <replacement>" } else { "" };
+fn dump_cluster(text: &str, cluster: &Cluster) {
+    let cluster_text = &text[cluster.text_range.clone()];
+    let info = cluster.flags;
+    let replacement = if cluster.is_replaced {
+        " <replaced>"
+    } else {
+        ""
+    };
     let content = match info.content() {
         ClusterContent::Text => ' ',
         ClusterContent::Emoji => 'E',

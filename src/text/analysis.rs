@@ -22,12 +22,15 @@ pub struct Cluster {
     pub flags: ClusterFlags,
     /// Range in the source text.
     pub text_range: Range<usize>,
+    /// True if this cluster was replaced.
+    pub is_replaced: bool,
 }
 
 /// Results of text analysis.
 #[derive(Clone, Default)]
 pub struct TextAnalysis {
-    pub(super) clusters: Vec<(ClusterFlags, u8)>,
+    pub(super) cluster_flags: Vec<ClusterFlags>,
+    pub(super) cluster_ends: Vec<u32>,
     elements: Vec<Element>,
     pub(super) script_segments: Vec<ScriptBidiSegment>,
     num_objects: usize,
@@ -37,135 +40,70 @@ pub struct TextAnalysis {
 #[derive(Clone, Debug)]
 pub struct ScriptBidiSegment {
     pub script: Script,
-    pub text_range: Range<usize>,
-    pub cluster_range: Range<usize>,
+    pub range: ClusterRange,
 }
 
 impl TextAnalysis {
     /// Denotes that a cluster has been replaced by an object.
-    const CLUSTER_REPLACEMENT: u8 = 0x1;
-    /// Denotes that a cluster must parse further entries to compute the
-    /// full length.
-    const CLUSTER_CONTINUES: u8 = 0x2;
-    /// Maximum length of a single cluster entry before it is split
-    /// and marked with continuations.
-    const MAX_CLUSTER_ENTRY_LEN: usize = 64;
+    const REPLACEMENT: u8 = 0x1;
 }
 
 impl TextAnalysis {
     /// Clears the analysis data.
     pub fn clear(&mut self) {
-        self.clusters.clear();
+        self.cluster_flags.clear();
+        self.cluster_ends.clear();
         self.elements.clear();
         self.script_segments.clear();
         self.num_objects = 0;
     }
 
-    pub fn clusters_for_range(
-        &self,
-        range: &ClusterRange,
-    ) -> impl Iterator<Item = (ClusterFlags, Range<usize>, bool)> + '_ {
+    pub fn clusters_for_range(&self, range: &ClusterRange) -> impl Iterator<Item = Cluster> + '_ {
         let mut tracking_start = range.text.start;
-        let mut clusters = self
-            .clusters
+        let flags = self
+            .cluster_flags
             .get(range.clusters.clone())
             .unwrap_or_default()
             .iter()
             .copied();
-        core::iter::from_fn(move || {
-            let (info, len) = clusters.next()?;
-            let start = tracking_start;
-            let mut end = start + (len >> 2) as usize;
-            let is_replacement = len & Self::CLUSTER_REPLACEMENT != 0;
-            if len & Self::CLUSTER_CONTINUES != 0 {
-                while let Some((_, len)) = clusters.next() {
-                    end += (len >> 2) as usize;
-                    if len & Self::CLUSTER_CONTINUES == 0 {
-                        break;
-                    }
-                }
-            }
-            tracking_start = end;
-            Some((info, start..end, is_replacement))
-        })
-    }
-
-    pub(super) fn num_clusters(&self) -> usize {
-        self.clusters.len()
-    }
-
-    pub fn cluster_ranges(&self) -> impl Iterator<Item = (ClusterFlags, Range<usize>, bool)> + '_ {
-        let mut tracking_start = 0;
-        let mut clusters = self.clusters.iter().copied();
-        core::iter::from_fn(move || {
-            let (info, len) = clusters.next()?;
-            let start = tracking_start;
-            let mut end = start + (len >> 2) as usize;
-            let is_replacement = len & Self::CLUSTER_REPLACEMENT != 0;
-            if len & Self::CLUSTER_CONTINUES != 0 {
-                while let Some((_, len)) = clusters.next() {
-                    end += (len >> 2) as usize;
-                    if len & Self::CLUSTER_CONTINUES == 0 {
-                        break;
-                    }
-                }
-            }
-            tracking_start = end;
-            Some((info, start..end, is_replacement))
-        })
-    }
-
-    pub(crate) fn cluster_ranges2(
-        &self,
-    ) -> impl Iterator<Item = (ClusterFlags, Range<usize>, bool, usize)> + '_ {
-        let mut tracking_start = 0;
-        let mut clusters = self.clusters.iter().copied().enumerate();
-        core::iter::from_fn(move || {
-            let (mut idx, (info, len)) = clusters.next()?;
-            let start = tracking_start;
-            let mut end = start + (len >> 2) as usize;
-            let is_replacement = len & Self::CLUSTER_REPLACEMENT != 0;
-            if len & Self::CLUSTER_CONTINUES != 0 {
-                while let Some((cont_idx, (_, len))) = clusters.next() {
-                    end += (len >> 2) as usize;
-                    if len & Self::CLUSTER_CONTINUES == 0 {
-                        break;
-                    }
-                    idx = cont_idx;
-                }
-            }
-            tracking_start = end;
-            Some((info, start..end, is_replacement, idx + 1))
-        })
-    }
-
-    pub fn cluster_ranges_for_segment(
-        &self,
-        segment: &ScriptBidiSegment,
-    ) -> impl Iterator<Item = (ClusterFlags, Range<usize>, bool)> + '_ {
-        let mut tracking_start = segment.text_range.start;
-        let mut clusters = self
-            .clusters
-            .get(segment.cluster_range.clone())
+        let ends = self
+            .cluster_ends
+            .get(range.clusters.clone())
             .unwrap_or_default()
             .iter()
             .copied();
-        core::iter::from_fn(move || {
-            let (info, len) = clusters.next()?;
+        flags.zip(ends).map(move |(flags, end)| {
+            let end = end as usize;
             let start = tracking_start;
-            let mut end = start + (len >> 2) as usize;
-            let is_replacement = len & Self::CLUSTER_REPLACEMENT != 0;
-            if len & Self::CLUSTER_CONTINUES != 0 {
-                while let Some((_, len)) = clusters.next() {
-                    end += (len >> 2) as usize;
-                    if len & Self::CLUSTER_CONTINUES == 0 {
-                        break;
-                    }
-                }
-            }
+            let is_replaced = end & 0x1 != 0;
+            let end = end >> 2;
             tracking_start = end;
-            Some((info, start..end, is_replacement))
+            Cluster {
+                flags,
+                text_range: start..end,
+                is_replaced,
+            }
         })
+    }
+
+    pub fn clusters(&self) -> impl Iterator<Item = Cluster> + '_ {
+        self.clusters_for_range(&self.full_range())
+    }
+
+    fn full_range(&self) -> ClusterRange {
+        let end = self
+            .cluster_ends
+            .last()
+            .map(|pos| (*pos as usize) >> 2)
+            .unwrap_or(0);
+        ClusterRange {
+            text: 0..end,
+            clusters: 0..self.cluster_flags.len(),
+        }
+    }
+
+    pub(super) fn num_clusters(&self) -> usize {
+        self.cluster_flags.len()
     }
 }
 
@@ -180,28 +118,20 @@ impl TextAnalysis {
         self.elements.push(element);
     }
 
-    pub(super) fn push_cluster(&mut self, cluster: &PendingCluster, is_replacement: bool) {
+    pub(super) fn push_cluster(&mut self, cluster: &PendingCluster, is_replaced: bool) {
         println!(
-            "pushing cluster with char {:?}, text {:?}, replacement: {is_replacement:}",
+            "pushing cluster with char {:?}, text {:?}, replaced: {is_replaced:}",
             cluster.base_char,
             cluster.range.clone()
         );
-        let cluster_start = self.clusters.len();
-        let mut len = cluster.range.len();
-        while len > Self::MAX_CLUSTER_ENTRY_LEN {
-            self.clusters.push((
-                cluster.info,
-                (Self::MAX_CLUSTER_ENTRY_LEN as u8) << 2
-                    | Self::CLUSTER_CONTINUES
-                    | is_replacement as u8,
-            ));
-            len -= Self::MAX_CLUSTER_ENTRY_LEN;
+        if cluster.range.is_empty() {
+            return;
         }
-        if len != 0 {
-            self.clusters
-                .push((cluster.info, (len as u8) << 2 | is_replacement as u8));
-        }
-        if !is_replacement {
+        let cluster_start = self.cluster_flags.len();
+        self.cluster_flags.push(cluster.info);
+        self.cluster_ends
+            .push((cluster.range.end as u32) << 2 | is_replaced as u32);
+        if !is_replaced {
             let mut next = cluster.script;
             if cluster.info.is_emoji() {
                 next = match cluster.info.content() {
@@ -211,7 +141,7 @@ impl TextAnalysis {
             }
             if let Some(last_script_segment) = self.script_segments.last_mut() {
                 let (do_merge, script) =
-                    if cluster.range.start == last_script_segment.text_range.end {
+                    if cluster.range.start == last_script_segment.range.text.end {
                         let prev = last_script_segment.script;
                         if prev == next {
                             (true, next)
@@ -230,22 +160,26 @@ impl TextAnalysis {
                     };
                 if do_merge {
                     last_script_segment.script = script;
-                    last_script_segment.cluster_range.end = self.clusters.len();
-                    last_script_segment.text_range.end = cluster.range.end;
+                    last_script_segment.range.clusters.end = self.cluster_flags.len();
+                    last_script_segment.range.text.end = cluster.range.end;
                 } else {
-                    let cluster_end = self.clusters.len();
+                    let cluster_end = self.cluster_flags.len();
                     self.script_segments.push(ScriptBidiSegment {
                         script,
-                        text_range: cluster.range.clone(),
-                        cluster_range: cluster_start..cluster_end,
+                        range: ClusterRange {
+                            text: cluster.range.clone(),
+                            clusters: cluster_start..cluster_end,
+                        },
                     })
                 }
             } else {
-                let cluster_end = self.clusters.len();
+                let cluster_end = self.cluster_flags.len();
                 self.script_segments.push(ScriptBidiSegment {
                     script: next,
-                    text_range: cluster.range.clone(),
-                    cluster_range: cluster_start..cluster_end,
+                    range: ClusterRange {
+                        text: cluster.range.clone(),
+                        clusters: cluster_start..cluster_end,
+                    },
                 })
             }
         }

@@ -356,9 +356,9 @@ impl TextAnalyzer {
         let mut segments: Vec<BidiSegment> = Vec::new();
         // Filter replacement clusters
         let mut clusters = analysis
-            .cluster_ranges2()
+            .clusters()
             .enumerate()
-            .filter(|(_, cluster)| !cluster.2)
+            .filter(|(_, cluster)| !cluster.is_replaced)
             .peekable();
         let mut range = ClusterRange::default();
         // Loop over the bidi items
@@ -380,25 +380,24 @@ impl TextAnalyzer {
                     for i in 0..*count {
                         let level = levels.next().unwrap();
                         // Find the range for the next non-replacement cluster
-                        let (cluster_idx, (_, cluster_range, _, cluster_end)) =
-                            clusters.next().unwrap();
+                        let (cluster_idx, cluster) = clusters.next().unwrap();
                         if i == 0 {
-                            range.text.start = cluster_range.start;
+                            range.text.start = cluster.text_range.start;
                             //range.clusters.start = cluster_idx;
                         } else if level != cur_level {
                             segments.push(BidiSegment::Text(cur_level, range.clone()));
-                            range.text = cluster_range.clone();
+                            range.text = cluster.text_range.clone();
                             range.clusters.start = cluster_idx;
-                            range.clusters.end = cluster_end;
+                            range.clusters.end = cluster_idx + 1;
                         }
                         cur_level = level;
-                        range.text.end = cluster_range.end;
-                        range.clusters.end = cluster_end;
+                        range.text.end = cluster.text_range.end;
+                        range.clusters.end = cluster_idx + 1;
                     }
                     if !range.text.is_empty() {
                         range.clusters.end = clusters
                             .peek()
-                            .map(|(_, (_, _, _, end))| *end)
+                            .map(|(idx, _)| *idx)
                             .unwrap_or(analysis.num_clusters());
                         segments.push(BidiSegment::Text(cur_level, range.clone()));
                     }
