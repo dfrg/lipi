@@ -91,6 +91,17 @@ impl ClusterAttributes {
         content == ClusterContent::Emoji as _ || content == ClusterContent::Symbol as _
     }
 
+    /// Returns true if this cluster is an emoji.
+    pub const fn is_emoji(self) -> bool {
+        (self.0 & Self::CONTENT_MASK) == ClusterContent::Emoji as _
+    }
+
+    /// Returns true if this cluster is a symbol or emoji with text
+    /// presentation.
+    pub const fn is_symbol(self) -> bool {
+        (self.0 & Self::CONTENT_MASK) == ClusterContent::Symbol as _
+    }
+
     /// Returns true if this cluster is any whitespace.
     pub const fn is_whitespace(self) -> bool {
         (self.0 & Self::CONTENT_MASK) >= ClusterContent::Space as _
@@ -223,13 +234,4 @@ impl WordKind {
             _ => Self::Other,
         }
     }
-}
-
-/// A synchronized range for text and clusters.
-#[derive(Clone, Default, Debug)]
-pub struct ClusterRange {
-    /// The range in the source text in code units.
-    pub text: Range<usize>,
-    /// The range in the cluster buffer.
-    pub clusters: Range<usize>,
 }

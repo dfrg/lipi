@@ -1,9 +1,6 @@
 //! Type to hold text analysis results.
 
-use super::{
-    is_real_script, BidiLevel, Cluster, ClusterAttributes, ClusterContent, ClusterRange,
-    PendingCluster,
-};
+use super::{is_real_script, BidiLevel, Cluster, ClusterAttributes, Language, PendingCluster};
 use crate::element::{Element, ObjectHandle};
 use crate::Script;
 use alloc::vec::Vec;
@@ -15,9 +12,9 @@ pub struct TextAnalysis {
     /// Sequence of elements.
     pub elements: Vec<Element>,
     /// Segmentation and classification of clusters.
-    pub cluster: ClusterAnalysis,
-    /// Bidirectional algorithm results.
-    pub bidi: BidiAnalysis,
+    pub clusters: ClusterAnalysis,
+    /// Sequence of segments.
+    pub segments: Vec<Segment>,
     /// Sequence of paragraphs.
     pub paragraphs: Vec<Paragraph>,
 }
@@ -26,48 +23,40 @@ impl TextAnalysis {
     /// Clears the analysis results.
     pub fn clear(&mut self) {
         self.elements.clear();
-        self.cluster.clear();
-        self.bidi.clear();
+        self.clusters.clear();
+        self.segments.clear();
         self.paragraphs.clear();
     }
 }
 
-/// Results of the bidirectional algorithm.
-#[derive(Clone, Default)]
-pub struct BidiAnalysis {
-    segments: Vec<BidiSegment>,
-}
-
-impl BidiAnalysis {
-    /// Returns the underlying segments.
-    pub fn segments(&self) -> &[BidiSegment] {
-        &self.segments
-    }
-
-    /// Clears the analysis results.
-    pub fn clear(&mut self) {
-        self.segments.clear();
-    }
-
-    pub(super) fn push(&mut self, segment: BidiSegment) {
-        self.segments.push(segment);
-    }
-}
-
-/// Bidirectinal segmentation element
+/// A text segment.
 #[derive(Clone, Debug)]
-pub enum BidiSegment {
-    /// A text run.
-    Text(BidiLevel, ClusterRange),
+pub struct TextSegment {
+    /// The Unicode script.
+    pub script: Script,
+    /// The user specified language.
+    pub language: Option<Language>,
+    /// The resolved bidirectional level.
+    pub bidi_level: BidiLevel,
+    /// The cluster range for the text.
+    pub clusters: Range<usize>,
+}
+
+/// A segment in some analyzed text.
+#[derive(Clone, Debug)]
+pub enum Segment {
+    /// A text segment.
+    Text(TextSegment),
     /// An inline object.
     Object(BidiLevel, ObjectHandle),
 }
 
-impl BidiSegment {
+impl Segment {
     /// Returns the bidirectional level for this segment.
-    pub const fn level(&self) -> BidiLevel {
+    pub const fn bidi_level(&self) -> BidiLevel {
         match self {
-            Self::Text(level, _) | Self::Object(level, _) => *level,
+            Self::Text(segment) => segment.bidi_level,
+            Self::Object(level, _) => *level,
         }
     }
 }
@@ -78,7 +67,7 @@ pub struct Paragraph {
     /// Resolved bidirectional level.
     pub level: BidiLevel,
     /// The range of text and clusters covered.
-    pub range: ClusterRange,
+    pub clusters: Range<usize>,
 }
 
 /// Results of segmentation and classification of clusters.
@@ -86,15 +75,6 @@ pub struct Paragraph {
 pub struct ClusterAnalysis {
     pub(super) flags: Vec<ClusterAttributes>,
     pub(super) ends: Vec<u32>,
-    pub(super) script_segments: Vec<ScriptBidiSegment>,
-    num_objects: usize,
-}
-
-/// Fragment of text split by script and bidirectional level.
-#[derive(Clone, Debug)]
-pub struct ScriptBidiSegment {
-    pub script: Script,
-    pub range: ClusterRange,
 }
 
 impl ClusterAnalysis {
@@ -116,7 +96,7 @@ impl ClusterAnalysis {
     /// Returns the cluster at the given index.
     pub fn get(&self, index: usize) -> Option<Cluster> {
         let flags = *self.flags.get(index)?;
-        let start = (*self.ends.get(index.saturating_sub(1))? >> 2) as usize;
+        let start = self.text_start(index)?;
         let end_with_flags = *self.ends.get(index)?;
         let is_replaced = end_with_flags & Self::REPLACEMENT != 0;
         let end = (end_with_flags >> 2) as usize;
@@ -129,21 +109,21 @@ impl ClusterAnalysis {
 
     /// Returns an iterator over the sequence of clusters.
     pub fn iter(&self) -> impl Iterator<Item = Cluster> + '_ {
-        self.iter_range(&self.full_range())
+        self.iter_range(0..self.flags.len())
     }
 
     /// Returns an iterator over the sequence of clusters in the given range.
-    pub fn iter_range(&self, range: &ClusterRange) -> impl Iterator<Item = Cluster> + '_ {
-        let mut tracking_start = range.text.start;
+    pub fn iter_range(&self, range: Range<usize>) -> impl Iterator<Item = Cluster> + '_ {
+        let mut tracking_start = self.text_range(range.clone()).map(|r| r.start).unwrap_or(0);
         let flags = self
             .flags
-            .get(range.clusters.clone())
+            .get(range.clone())
             .unwrap_or_default()
             .iter()
             .copied();
         let ends = self
             .ends
-            .get(range.clusters.clone())
+            .get(range.clone())
             .unwrap_or_default()
             .iter()
             .copied();
@@ -160,109 +140,66 @@ impl ClusterAnalysis {
         })
     }
 
+    /// Returns the text range for the given range of clusters.
+    pub fn text_range(&self, clusters: Range<usize>) -> Option<Range<usize>> {
+        let text_start = self.text_start(clusters.start)?;
+        if clusters.is_empty() {
+            Some(text_start..text_start)
+        } else {
+            let text_end = (*self.ends.get(clusters.end.saturating_sub(1))? as usize) >> 2;
+            Some(text_start..text_end)
+        }
+    }
+
     /// Clears the analysis data.
     pub fn clear(&mut self) {
         self.flags.clear();
         self.ends.clear();
-        self.script_segments.clear();
-        self.num_objects = 0;
     }
 
-    fn full_range(&self) -> ClusterRange {
-        let end = self
-            .ends
-            .last()
-            .map(|pos| (*pos as usize) >> 2)
-            .unwrap_or(0);
-        ClusterRange {
-            text: 0..end,
-            clusters: 0..self.flags.len(),
-        }
+    fn text_start(&self, index: usize) -> Option<usize> {
+        let start = if index == 0 {
+            0
+        } else {
+            (*self.ends.get(index - 1)? as usize) >> 2
+        };
+        Some(start)
     }
 }
 
 impl ClusterAnalysis {
-    pub(super) fn next_object(&mut self) -> ObjectHandle {
-        let idx = self.num_objects;
-        self.num_objects += 1;
-        ObjectHandle(idx as u32)
-    }
-
     pub(super) fn push(&mut self, cluster: &PendingCluster, is_replaced: bool) {
         println!(
             "pushing cluster with char {:?}, text {:?}, replaced: {is_replaced:}",
             cluster.base_char,
             cluster.range.clone()
         );
-        if cluster.range.is_empty() {
-            return;
-        }
-        let cluster_start = self.flags.len();
         self.flags.push(cluster.attrs);
         self.ends
             .push((cluster.range.end as u32) << 2 | is_replaced as u32);
-        if !is_replaced {
-            let mut next = cluster.script;
-            if cluster.attrs.is_emoji_or_symbol() {
-                next = match cluster.attrs.content() {
-                    ClusterContent::Emoji => Script::from_bytes(*b"Zsye"),
-                    _ => Script::from_bytes(*b"Zsym"),
-                };
-            }
-            if let Some(last_script_segment) = self.script_segments.last_mut() {
-                let (do_merge, script) =
-                    if cluster.range.start == last_script_segment.range.text.end {
-                        let prev = last_script_segment.script;
-                        if prev == next {
-                            (true, next)
-                        } else {
-                            let prev_real = is_real_script(prev);
-                            let next_real = is_real_script(next);
-                            match (prev_real, next_real) {
-                                (false, false) => (true, next),
-                                (true, false) => (true, prev),
-                                (false, true) => (true, next),
-                                (true, true) => (false, next),
-                            }
-                        }
-                    } else {
-                        (false, next)
-                    };
-                if do_merge {
-                    last_script_segment.script = script;
-                    last_script_segment.range.clusters.end = self.flags.len();
-                    last_script_segment.range.text.end = cluster.range.end;
-                } else {
-                    let cluster_end = self.flags.len();
-                    self.script_segments.push(ScriptBidiSegment {
-                        script,
-                        range: ClusterRange {
-                            text: cluster.range.clone(),
-                            clusters: cluster_start..cluster_end,
-                        },
-                    })
-                }
-            } else {
-                let cluster_end = self.flags.len();
-                self.script_segments.push(ScriptBidiSegment {
-                    script: next,
-                    range: ClusterRange {
-                        text: cluster.range.clone(),
-                        clusters: cluster_start..cluster_end,
-                    },
-                })
-            }
-        }
     }
 
-    pub(super) fn set_rtl(&mut self, range: &Range<usize>) {
+    pub(super) fn set_rtl(&mut self, clusters: &Range<usize>) {
         for cluster in self
             .flags
-            .get_mut(range.clone())
+            .get_mut(clusters.clone())
             .unwrap_or_default()
             .iter_mut()
         {
             cluster.set_rtl();
+        }
+    }
+}
+
+fn merge_scripts(prev: Script, next: Script) -> Option<Script> {
+    if prev == next {
+        Some(next)
+    } else {
+        match (is_real_script(prev), is_real_script(next)) {
+            (false, false) => Some(next),
+            (true, false) => Some(prev),
+            (false, true) => Some(next),
+            (true, true) => None,
         }
     }
 }

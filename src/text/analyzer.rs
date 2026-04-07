@@ -1,13 +1,12 @@
 //! Text analysis context.
 
 use super::{
-    bidi, properties::script_from_icu, BidiSegment, ClusterAttributes, ClusterRange,
-    PendingCluster, SourceElement, SourceElementKind, TextAnalysis, TextAnalysisProperties,
-    TextAnalysisPropertiesProvider, WordKind,
+    bidi, is_real_script, properties::script_from_icu, BidiDirection, BidiOverride,
+    ClusterAttributes, PendingCluster, Segment, SourceElement, SourceElementKind, TextAnalysis,
+    TextAnalysisProperties, TextAnalysisPropertiesProvider, TextSegment, WordKind,
 };
 use crate::{Element, ElementKind, ObjectHandle, Script, MAX_TEXT_LEN};
 use alloc::vec::Vec;
-use parlance::{BidiDirection, BidiOverride};
 use {
     icu_properties::props::{
         BidiClass, BidiMirroringGlyph, BidiPairedBracketType, EnumeratedProperty,
@@ -25,13 +24,11 @@ pub enum TextAnalysisError {
 /// Context and scratch memory for text analysis.
 #[derive(Default)]
 pub struct TextAnalyzer {
-    break_shaping_before: bool,
     bidi: bidi::BidiResolver,
-    needs_bidi: bool,
     bidi_classes: Vec<BidiClass>,
     bidi_brackets: Vec<(usize, char, BidiMirroringGlyph)>,
     bidi_items: Vec<BidiItem>,
-    num_objects: u32,
+    text_segments: Vec<TextSegment>,
 }
 
 impl TextAnalyzer {
@@ -47,27 +44,47 @@ impl TextAnalyzer {
         if text.len() > MAX_TEXT_LEN {
             return Err(TextAnalysisError::TextExceedsMaxLen);
         }
-        let grapheme_breaker = icu_segmenter::GraphemeClusterSegmenter::new();
-        let word_breaker =
-            icu_segmenter::WordSegmenter::new_auto(WordBreakInvariantOptions::default());
+        let state = &mut TransientState::default();
+        fn real_script(s: icu_properties::props::Script) -> bool {
+            use icu_properties::props::Script;
+            !matches!(s, Script::Common | Script::Unknown | Script::Inherited)
+        }
+        let initial_script = text
+            .chars()
+            .map(|c| parley_data::Properties::get(c).script())
+            .find(|s| real_script(*s))
+            .map(|s| script_from_icu(s))
+            .unwrap_or(Script::from_bytes(*b"Latn"));
         let mut chars = text
             .char_indices()
             .chain(Some((text.len(), ' ')))
             .enumerate();
         let mut element_start = 0;
+        // Read the first element
         let (_, mut properties, mut element_end) = self
-            .next_element(property_provider, &mut elements, analysis, element_start)
+            .next_element(
+                state,
+                property_provider,
+                &mut elements,
+                analysis,
+                element_start,
+            )
             .unwrap_or_else(|| (Default::default(), Default::default(), usize::MAX));
-        let mut line_options = properties.line_break_options();
+        // Build our initial iterator set
+        let grapheme_breaker = icu_segmenter::GraphemeClusterSegmenter::new();
         let mut graphemes = BoundaryTracker::new(grapheme_breaker.segment_str(text), 0);
+        let word_breaker =
+            icu_segmenter::WordSegmenter::new_auto(WordBreakInvariantOptions::default());
         let mut words = BoundaryTracker::new(word_breaker.segment_str(text), 0);
+        let mut line_options = properties.line_break_options();
         let mut line_breaker = icu_segmenter::LineSegmenter::new_auto(line_options.get());
         let mut lines = BoundaryTracker::new(line_breaker.segment_str(text), 0);
         let mut pending_cluster = PendingCluster {
             attrs: ClusterAttributes::default(),
             range: 0..0,
-            script: Script::UNKNOWN,
             base_char: ' ',
+            script: initial_script,
+            lang: properties.language,
         };
         // Signifies whether we have processed an object that will replace
         // some text.
@@ -85,9 +102,13 @@ impl TextAnalyzer {
                 pending_cluster.range.end = byte_idx;
                 // We need to skip zero length elements and objects
                 loop {
-                    if let Some((next_element, next_properties, next_len)) =
-                        self.next_element(property_provider, &mut elements, analysis, element_end)
-                    {
+                    if let Some((next_element, next_properties, next_len)) = self.next_element(
+                        state,
+                        property_provider,
+                        &mut elements,
+                        analysis,
+                        element_end,
+                    ) {
                         element_start = element_end;
                         element_end = element_end.saturating_add(next_len);
                         // Synthesized bidi control character
@@ -106,10 +127,8 @@ impl TextAnalyzer {
                                     BidiDirection::Ltr => BidiClass::LeftToRight,
                                     BidiDirection::Rtl => BidiClass::RightToLeft,
                                 };
-                                pending_bidi = Some((
-                                    class,
-                                    BidiItem::Object(ObjectHandle(self.num_objects - 1)),
-                                ));
+                                let handle = ObjectHandle(state.num_objects - 1);
+                                pending_bidi = Some((class, BidiItem::Object(handle)));
                                 flush_pending = !pending_replacement;
                                 // If the length is non-zero then the object
                                 // replaces the text
@@ -143,7 +162,7 @@ impl TextAnalyzer {
                             SourceElementKind::BreakSegmentation => {
                                 reset_line_iter = true;
                                 reset_grapheme_word_iters = true;
-                                // The break item won't push a class to the
+                                // The break item won't push a class so the
                                 // actual value is irrelevant
                                 pending_bidi = Some((BidiClass::OtherNeutral, BidiItem::Break));
                             }
@@ -171,15 +190,10 @@ impl TextAnalyzer {
                                 .attrs
                                 .set_word_kind(WordKind::from_icu(words.iter.word_type()));
                             pending_cluster.range.end = byte_idx;
-                            if !flush_replace {
-                                self.push_bidi_char(
-                                    pending_cluster.base_char,
-                                    parley_data::Properties::get(pending_cluster.base_char),
-                                );
-                            }
-                            analysis.cluster.push(&pending_cluster, flush_replace);
+                            self.push_cluster(state, analysis, &pending_cluster, flush_replace);
                             pending_cluster.base_char = ch;
                             pending_cluster.range.start = byte_idx;
+                            pending_cluster.lang = properties.language;
                         }
                         // Handle synthesized bidi control characters. This
                         // must be done _after_ flushing the pending cluster
@@ -234,14 +248,9 @@ impl TextAnalyzer {
                 pending_cluster.attrs = ClusterAttributes::new(ch, char_props);
                 pending_cluster.script = script_from_icu(char_props.script());
                 pending_cluster.base_char = ch;
+                pending_cluster.lang = properties.language;
                 if byte_idx > 0 && !cluster.range.is_empty() {
-                    if !pending_replacement {
-                        self.push_bidi_char(
-                            cluster.base_char,
-                            parley_data::Properties::get(cluster.base_char),
-                        );
-                    }
-                    analysis.cluster.push(&cluster, pending_replacement);
+                    self.push_cluster(state, analysis, &cluster, pending_replacement);
                     pending_replacement = false;
                 }
             } else {
@@ -255,17 +264,16 @@ impl TextAnalyzer {
 
 impl TextAnalyzer {
     fn clear(&mut self) {
-        self.break_shaping_before = false;
-        self.needs_bidi = false;
         self.bidi.clear();
         self.bidi_classes.clear();
         self.bidi_brackets.clear();
         self.bidi_items.clear();
-        self.num_objects = 0;
+        self.text_segments.clear();
     }
 
     fn next_element(
         &mut self,
+        state: &mut TransientState,
         property_provider: &mut impl TextAnalysisPropertiesProvider,
         elements: &mut impl Iterator<Item = SourceElement>,
         analysis: &mut TextAnalysis,
@@ -274,8 +282,8 @@ impl TextAnalyzer {
         let text_start = text_start as u32;
         let element = elements.next()?;
         let properties = property_provider.text_analysis_properties(&element.handle);
-        let break_shaping_before = self.break_shaping_before;
-        self.break_shaping_before = false;
+        let break_shaping_before = state.break_shaping_before;
+        state.break_shaping_before = false;
         let len = match element.kind {
             SourceElementKind::Text(len) => {
                 analysis.elements.push(Element {
@@ -287,8 +295,8 @@ impl TextAnalyzer {
                 len
             }
             SourceElementKind::Object(_dir, len) => {
-                let object_handle = ObjectHandle(self.num_objects);
-                self.num_objects += 1;
+                let object_handle = ObjectHandle(state.num_objects);
+                state.num_objects += 1;
                 analysis.elements.push(Element {
                     handle: element.handle,
                     kind: ElementKind::Object(object_handle, len),
@@ -319,11 +327,11 @@ impl TextAnalyzer {
             | SourceElementKind::PushBidiIsolate(..)
             | SourceElementKind::PopBidiOverride
             | SourceElementKind::PopBidiIsolate => {
-                self.needs_bidi = true;
+                state.needs_bidi = true;
                 0
             }
             SourceElementKind::BreakSegmentation => {
-                self.break_shaping_before = true;
+                state.break_shaping_before = true;
                 0
             }
             SourceElementKind::Marker(id) => {
@@ -339,21 +347,63 @@ impl TextAnalyzer {
         Some((element, properties, len as usize))
     }
 
-    fn push_bidi_char(&mut self, ch: char, props: parley_data::Properties) {
+    fn push_cluster(
+        &mut self,
+        state: &mut TransientState,
+        analysis: &mut TextAnalysis,
+        cluster: &PendingCluster,
+        is_replaced: bool,
+    ) -> bool {
+        if cluster.range.is_empty() {
+            return false;
+        }
+        let cluster_start = analysis.clusters.len();
+        analysis.clusters.push(cluster, is_replaced);
+        // No further processing for replacement clusters
+        if is_replaced {
+            return true;
+        }
+        self.push_bidi_char(
+            state,
+            cluster.base_char,
+            parley_data::Properties::get(cluster.base_char),
+        );
+        let cluster_end = analysis.clusters.len();
+        let last_text_end = state.last_text_end;
+        state.last_text_end = cluster.range.end;
+        if let Some(BidiItem::Text(last_segment)) = self.bidi_items.last_mut() {
+            if cluster.range.start == last_text_end && cluster.lang == last_segment.language {
+                if let Some(merged) = merge_scripts(last_segment.script, cluster.script) {
+                    last_segment.script = merged;
+                    last_segment.clusters.end = cluster_end;
+                    return true;
+                }
+            }
+        }
+        self.bidi_items.push(BidiItem::Text(TextSegment {
+            script: cluster.script,
+            language: cluster.lang,
+            bidi_level: 0,
+            clusters: cluster_start..cluster_end,
+        }));
+        true
+    }
+
+    fn push_bidi_char(
+        &mut self,
+        state: &mut TransientState,
+        ch: char,
+        props: parley_data::Properties,
+    ) {
         println!("pushing bidi char {ch:?}");
         let class = props.bidi_class();
         let start = self.bidi_classes.len();
-        self.needs_bidi = self.needs_bidi || bidi::needs_bidi_resolution(class);
+        state.needs_bidi = state.needs_bidi || bidi::needs_bidi_resolution(class);
         let bracket = icu_properties::props::BidiMirroringGlyph::for_char(ch);
         if bracket.paired_bracket_type != BidiPairedBracketType::None {
             self.bidi_brackets.push((start, ch, bracket));
         }
         self.bidi_classes.push(class);
-        if let Some(BidiItem::Text(count)) = self.bidi_items.last_mut() {
-            *count += 1;
-        } else {
-            self.bidi_items.push(BidiItem::Text(1));
-        }
     }
 
     fn handle_bidi(&mut self, analysis: &mut TextAnalysis) {
@@ -377,16 +427,16 @@ impl TextAnalyzer {
         analysis: &mut TextAnalysis,
         mut levels: impl Iterator<Item = u8>,
     ) -> Option<()> {
-        let segments = &mut analysis.bidi;
+        let segments = &mut analysis.segments;
+        segments.clear();
         // Filter replacement clusters
         let mut clusters = analysis
-            .cluster
+            .clusters
             .iter()
             .enumerate()
-            .filter(|(_, cluster)| !cluster.is_replaced)
-            .peekable();
-        let mut range = ClusterRange::default();
-        let mut last_level = 0;
+            .filter(|(_, cluster)| !cluster.is_replaced);
+        let mut force_break = false;
+        println!("bidi_items = {:?}", self.bidi_items);
         // Loop over the bidi items
         for item in &self.bidi_items {
             match item {
@@ -397,68 +447,100 @@ impl TextAnalyzer {
                 }
                 BidiItem::Object(handle) => {
                     // We only care about the level
-                    segments.push(BidiSegment::Object(levels.next()?, *handle));
+                    segments.push(Segment::Object(levels.next()?, *handle));
                 }
-                BidiItem::Text(count) => {
+                BidiItem::Text(segment) => {
+                    let count = segment.clusters.len();
+                    // Injected control characters break segments unnecessarily
+                    // so try to merge with the previous segment
+                    let mut merged = false;
+                    let mut segment = if let Some(Segment::Text(last_segment)) = segments.last() {
+                        if !force_break
+                            && last_segment.script == segment.script
+                            && last_segment.language == segment.language
+                        {
+                            let segment = last_segment.clone();
+                            // The logic is simpler if we pop and reinsert
+                            // later
+                            segments.pop();
+                            merged = true;
+                            segment
+                        } else {
+                            segment.clone()
+                        }
+                    } else {
+                        segment.clone()
+                    };
+                    force_break = false;
                     // This is the count of clusters, so sync up while skipping
                     // replacement clusters
-                    let mut cur_level = 0;
-                    for i in 0..*count {
+                    for i in 0..count {
                         let level = levels.next().unwrap();
                         // Find the range for the next non-replacement cluster
-                        let (cluster_idx, cluster) = clusters.next().unwrap();
-                        if i == 0 {
-                            range.text.start = cluster.text_range.start;
-                            //range.clusters.start = cluster_idx;
-                        } else if level != cur_level {
-                            segments.push(BidiSegment::Text(cur_level, range.clone()));
-                            range.text = cluster.text_range.clone();
-                            range.clusters.start = cluster_idx;
-                            range.clusters.end = cluster_idx + 1;
+                        let (cluster_idx, _) = clusters.next().unwrap();
+                        if level != segment.bidi_level {
+                            if !merged && i == 0 {
+                                // If we didn't merge and this is the first
+                                // level we've seen, then just set it
+                                segment.bidi_level = level;
+                            } else {
+                                segments.push(Segment::Text(segment.clone()));
+                                segment.bidi_level = level;
+                                segment.clusters.start = cluster_idx;
+                            }
                         }
-                        cur_level = level;
-                        range.text.end = cluster.text_range.end;
-                        range.clusters.end = cluster_idx + 1;
+                        segment.clusters.end = cluster_idx + 1;
                     }
-                    if !range.text.is_empty() {
-                        range.clusters.end = clusters
-                            .peek()
-                            .map(|(idx, _)| *idx)
-                            .unwrap_or(analysis.cluster.len());
-                        segments.push(BidiSegment::Text(cur_level, range.clone()));
+                    if !segment.clusters.is_empty() {
+                        segments.push(Segment::Text(segment.clone()));
                     }
-                    range.text.start = range.text.end;
-                    range.clusters.start = range.clusters.end;
-                    last_level = cur_level;
                 }
                 BidiItem::Break => {
-                    if !range.text.is_empty() {
-                        segments.push(BidiSegment::Text(last_level, range.clone()));
-                        range.text.start = range.text.end;
-                        range.clusters.start = range.clusters.end;
-                    }
+                    force_break = true;
                 }
             }
         }
         core::mem::drop(clusters);
-        for segment in segments.segments() {
-            if let BidiSegment::Text(level, range) = segment {
-                if *level & 1 != 0 {
-                    analysis.cluster.set_rtl(&range.clusters);
+        // Propagate RTL flag to affected clusters
+        for segment in segments.iter() {
+            if let Segment::Text(segment) = segment {
+                if segment.bidi_level & 1 != 0 {
+                    analysis.clusters.set_rtl(&segment.clusters);
                 }
             }
         }
-        println!("bidi_segments: {:?}", segments.segments());
         Some(())
     }
+}
+
+/// Transient state needed during analysis.
+#[derive(Default)]
+struct TransientState {
+    break_shaping_before: bool,
+    needs_bidi: bool,
+    num_objects: u32,
+    last_text_end: usize,
 }
 
 #[derive(Clone, Debug)]
 enum BidiItem {
     Control,
     Object(ObjectHandle),
-    Text(usize),
+    Text(TextSegment),
     Break,
+}
+
+fn merge_scripts(prev: Script, next: Script) -> Option<Script> {
+    if prev == next {
+        Some(next)
+    } else {
+        match (is_real_script(prev), is_real_script(next)) {
+            (false, false) => Some(next),
+            (true, false) => Some(prev),
+            (false, true) => Some(next),
+            (true, true) => None,
+        }
+    }
 }
 
 /// Helper for syncing boundary state tracking between

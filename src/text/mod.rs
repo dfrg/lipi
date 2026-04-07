@@ -12,10 +12,10 @@ use crate::{Language, Script};
 use core::ops::Range;
 use properties::LineBreakOptions;
 
-pub use analysis::{BidiAnalysis, BidiSegment, ClusterAnalysis, Paragraph, TextAnalysis};
+pub use analysis::{ClusterAnalysis, Paragraph, Segment, TextAnalysis, TextSegment};
 pub use analyzer::TextAnalyzer;
 pub use bidi::BidiLevel;
-pub use cluster::{Cluster, ClusterAttributes, ClusterContent, ClusterRange, WordKind};
+pub use cluster::{Cluster, ClusterAttributes, ClusterContent, WordKind};
 pub use element::{SourceElement, SourceElementKind};
 pub use parlance::{BidiDirection, BidiOverride, WordBreak};
 pub use properties::LineBreak;
@@ -26,6 +26,7 @@ struct PendingCluster {
     range: Range<usize>,
     base_char: char,
     script: Script,
+    lang: Option<Language>,
 }
 
 /// Properties that control text analysis.
@@ -104,13 +105,24 @@ mod tests {
     }
 
     #[test]
+    fn dump_clusters2() {
+        let text = "a ❤️ a 🏉 rugby  football\tand وَبَعْضهمْ an 🏈\u{FE0E} american\u{00a0}wut 123 football 🧙🏼‍♀️ ☺ ❤❤️ বিন্ধ্য 🇫🇷 \r\nbb";
+        let an = analyze(text, None);
+        dump_analysis(text, &an);
+        // let clusters = an.cluster_ranges().collect::<Vec<_>>();
+        // for cluster in &clusters {
+        //     dump_cluster(text, cluster);
+        // }
+    }
+
+    #[test]
     fn large_clusters() {
         let text = &Some('a')
             .into_iter()
             .chain(core::iter::repeat('\u{0301}').take(40))
             .collect::<String>();
         let an = analyze(text, None);
-        let clusters = an.cluster.iter().collect::<Vec<_>>();
+        let clusters = an.clusters.iter().collect::<Vec<_>>();
         // println!("{:?}", an.clusters);
         println!("{clusters:?}");
         for cluster in &clusters {
@@ -196,7 +208,7 @@ mod tests {
                 mk_props(WordBreak::Normal, 100),
             ],
         );
-        let clusters = an.cluster.iter().collect::<Vec<_>>();
+        let clusters = an.clusters.iter().collect::<Vec<_>>();
         for cluster in &clusters {
             dump_cluster(text, cluster);
         }
@@ -204,17 +216,25 @@ mod tests {
 
     #[test]
     fn object_replacement() {
-        let text = "helloobjworld";
+        let text = "he\u{0301}lloobjworld";
         let ar = analyze_ex2(
             text,
             &[
+                (
+                    TextAnalysisProperties {
+                        language: Some(Language::parse_prefix("en").unwrap().0),
+                        ..Default::default()
+                    },
+                    // TextAnalysisProperties::default(),
+                    SourceElementKind::Text(2),
+                ),
                 (
                     TextAnalysisProperties::default(),
                     SourceElementKind::Text(5),
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::Object(parlance::BidiDirection::Auto, 1),
+                    SourceElementKind::Object(parlance::BidiDirection::Rtl, 1),
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -337,7 +357,7 @@ mod tests {
                 (
                     TextAnalysisProperties::default(),
                     SourceElementKind::PushBidiIsolate(parlance::BidiDirection::Rtl),
-                    // SourceElementKind::PushBidiOverride(parlance::BidiOverride::Rtl),
+                    // SourceElementKind::PushBidiOverride(parlance::BidiOverride::Ltr),
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -367,15 +387,28 @@ mod tests {
     }
 
     fn dump_analysis(text: &str, analysis: &TextAnalysis) {
-        for cluster in analysis.cluster.iter() {
-            dump_cluster(text, &cluster);
-        }
+        println!("text_segments = {:?}", analysis.segments);
+        // for cluster in analysis.clusters.iter() {
+        //     dump_cluster(text, &cluster);
+        // }
         println!("");
-        for ss in &analysis.cluster.script_segments {
-            println!("[{}] {}", ss.script, &text[ss.range.text.clone()]);
-            println!("{ss:?}");
-            for cluster in analysis.cluster.iter_range(&ss.range) {
-                dump_cluster(text, &cluster);
+        for ss in &analysis.segments {
+            match ss {
+                Segment::Object(level, handle) => {
+                    println!("[object {} #{}]", *level, handle.0);
+                }
+                Segment::Text(t) => {
+                    println!(
+                        "[{} {:?} {}] {}",
+                        t.script,
+                        t.language,
+                        t.bidi_level,
+                        &text[analysis.clusters.text_range(t.clusters.clone()).unwrap()]
+                    );
+                    for cluster in analysis.clusters.iter_range(t.clusters.clone()) {
+                        dump_cluster(text, &cluster);
+                    }
+                }
             }
         }
     }

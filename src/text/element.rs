@@ -3,6 +3,36 @@
 use super::{BidiDirection, BidiOverride};
 use crate::ElementHandle;
 
+/// Determines how a marker reacts to bidirectional analysis and line breaking.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum MarkerAffinity {
+    /// Binds to the previous element.
+    Previous,
+    /// Binds to the next element.
+    Next,
+    /// Free to move independent of surrounding content.
+    Independent(BidiDirection),
+}
+
+impl Default for MarkerAffinity {
+    fn default() -> Self {
+        Self::Independent(BidiDirection::Auto)
+    }
+}
+
+#[derive(Copy, Clone, PartialEq, Eq, Default, Debug)]
+/// Arbitrary object in a layout.
+pub struct Marker {
+    /// How the marker binds to surrounding content.
+    pub affinity: MarkerAffinity,
+    /// Length of text that the marker replaces. May be 0.
+    pub len: u32,
+    /// True if the marker causes a break in segmentation and shaping.
+    pub breaks_segmentation: bool,
+}
+
+pub enum BidiControl {}
+
 /// The type of a source element.
 #[derive(Copy, Clone, Debug)]
 pub enum SourceElementKind {
