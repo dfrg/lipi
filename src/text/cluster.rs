@@ -10,8 +10,6 @@ pub struct Cluster {
     pub attributes: ClusterAttributes,
     /// Range in the source text.
     pub text_range: Range<usize>,
-    /// True if this cluster was replaced.
-    pub is_replaced: bool,
 }
 
 impl Deref for Cluster {

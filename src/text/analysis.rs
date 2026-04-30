@@ -78,11 +78,6 @@ pub struct ClusterAnalysis {
 }
 
 impl ClusterAnalysis {
-    /// Denotes that a cluster has been replaced by an object.
-    const REPLACEMENT: u32 = 0x1;
-}
-
-impl ClusterAnalysis {
     /// Returns true if the cluster sequence is empty.
     pub fn is_empty(&self) -> bool {
         self.flags.is_empty()
@@ -98,12 +93,10 @@ impl ClusterAnalysis {
         let flags = *self.flags.get(index)?;
         let start = self.text_start(index)?;
         let end_with_flags = *self.ends.get(index)?;
-        let is_replaced = end_with_flags & Self::REPLACEMENT != 0;
         let end = (end_with_flags >> 2) as usize;
         Some(Cluster {
             attributes: flags,
             text_range: start..end,
-            is_replaced,
         })
     }
 
@@ -129,13 +122,11 @@ impl ClusterAnalysis {
             .copied();
         flags.zip(ends).map(move |(flags, end)| {
             let start = tracking_start;
-            let is_replaced = end & Self::REPLACEMENT != 0;
             let end = (end >> 2) as usize;
             tracking_start = end;
             Cluster {
                 attributes: flags,
                 text_range: start..end,
-                is_replaced,
             }
         })
     }
@@ -168,15 +159,15 @@ impl ClusterAnalysis {
 }
 
 impl ClusterAnalysis {
-    pub(super) fn push(&mut self, cluster: &PendingCluster, is_replaced: bool) {
+    pub(super) fn push(&mut self, cluster: &PendingCluster) {
         println!(
-            "pushing cluster with char {:?}, text {:?}, replaced: {is_replaced:}",
+            "pushing cluster with char {:?}, text {:?}",
             cluster.base_char,
             cluster.range.clone()
         );
         self.flags.push(cluster.attrs);
         self.ends
-            .push((cluster.range.end as u32) << 2 | is_replaced as u32);
+            .push((cluster.range.end as u32) << 2);
     }
 
     pub(super) fn set_rtl(&mut self, clusters: &Range<usize>) {

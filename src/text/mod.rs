@@ -234,11 +234,11 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::Object(parlance::BidiDirection::Rtl, 1),
+                    SourceElementKind::Object(parlance::BidiDirection::Rtl),
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::Object(parlance::BidiDirection::Auto, 2),
+                    SourceElementKind::Object(parlance::BidiDirection::Auto),
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -261,7 +261,7 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::Object(parlance::BidiDirection::Auto, 0),
+                    SourceElementKind::Object(parlance::BidiDirection::Auto),
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -284,7 +284,7 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::Object(parlance::BidiDirection::Auto, 1),
+                    SourceElementKind::Object(parlance::BidiDirection::Auto),
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -308,7 +308,7 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::Object(parlance::BidiDirection::Auto, 1),
+                    SourceElementKind::Object(parlance::BidiDirection::Auto),
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -365,7 +365,7 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::Object(BidiDirection::Rtl, 0),
+                    SourceElementKind::Object(BidiDirection::Rtl),
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -417,11 +417,6 @@ mod tests {
 #[allow(unused)]
 fn dump_cluster(text: &str, cluster: &Cluster) {
     let cluster_text = &text[cluster.text_range.clone()];
-    let replacement = if cluster.is_replaced {
-        " <replaced>"
-    } else {
-        ""
-    };
     let content = match cluster.content() {
         ClusterContent::Text => ' ',
         ClusterContent::Emoji => 'E',
@@ -446,5 +441,5 @@ fn dump_cluster(text: &str, cluster: &Cluster) {
     };
     let rtl = if cluster.is_rtl() { '<' } else { ' ' };
     let count = cluster_text.chars().count();
-    println!("[{content} {line} {word} {rtl}]:     {cluster_text:?} ({cluster_text}) ({count} chars) {replacement}");
+    println!("[{content} {line} {word} {rtl}]:     {cluster_text:?} ({cluster_text}) ({count} chars)");
 }

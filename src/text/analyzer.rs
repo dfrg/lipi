@@ -86,9 +86,6 @@ impl TextAnalyzer {
             script: initial_script,
             lang: properties.language,
         };
-        // Signifies whether we have processed an object that will replace
-        // some text.
-        let mut pending_replacement = false;
         while let Some((_char_idx, (byte_idx, ch))) = chars.next() {
             let char_props = parley_data::Properties::get(ch);
             if byte_idx == 0 {
@@ -113,12 +110,10 @@ impl TextAnalyzer {
                         element_end = element_end.saturating_add(next_len);
                         // Synthesized bidi control character
                         let mut pending_bidi = None;
-                        // Save this since objects may modify it
-                        let flush_replace = pending_replacement;
                         // Most elements flush the pending cluster so default to true
                         let mut flush_pending = true;
                         match next_element.kind {
-                            SourceElementKind::Object(dir, _) => {
+                            SourceElementKind::Object(dir) => {
                                 // Objects reset all iterators
                                 reset_line_iter = true;
                                 reset_grapheme_word_iters = true;
@@ -129,12 +124,7 @@ impl TextAnalyzer {
                                 };
                                 let handle = ObjectHandle(state.num_objects - 1);
                                 pending_bidi = Some((class, BidiItem::Object(handle)));
-                                flush_pending = !pending_replacement;
-                                // If the length is non-zero then the object
-                                // replaces the text
-                                if next_len > 0 {
-                                    pending_replacement = true;
-                                }
+                                flush_pending = true;
                             }
                             SourceElementKind::PushBidiOverride(dir) => {
                                 let class = match dir {
@@ -190,7 +180,7 @@ impl TextAnalyzer {
                                 .attrs
                                 .set_word_kind(WordKind::from_icu(words.iter.word_type()));
                             pending_cluster.range.end = byte_idx;
-                            self.push_cluster(state, analysis, &pending_cluster, flush_replace);
+                            self.push_cluster(state, analysis, &pending_cluster);
                             pending_cluster.base_char = ch;
                             pending_cluster.range.start = byte_idx;
                             pending_cluster.lang = properties.language;
@@ -250,8 +240,7 @@ impl TextAnalyzer {
                 pending_cluster.base_char = ch;
                 pending_cluster.lang = properties.language;
                 if byte_idx > 0 && !cluster.range.is_empty() {
-                    self.push_cluster(state, analysis, &cluster, pending_replacement);
-                    pending_replacement = false;
+                    self.push_cluster(state, analysis, &cluster);
                 }
             } else {
                 pending_cluster.attrs.update_content(ch);
@@ -294,30 +283,30 @@ impl TextAnalyzer {
                 });
                 len
             }
-            SourceElementKind::Object(_dir, len) => {
+            SourceElementKind::Object(..) => {
                 let object_handle = ObjectHandle(state.num_objects);
                 state.num_objects += 1;
                 analysis.elements.push(Element {
                     handle: element.handle,
-                    kind: ElementKind::Object(object_handle, len),
-                    text_start,
-                    break_shaping_before,
-                });
-                len
-            }
-            SourceElementKind::StartSpan(id) => {
-                analysis.elements.push(Element {
-                    handle: element.handle,
-                    kind: ElementKind::StartSpan(id),
+                    kind: ElementKind::Object(object_handle),
                     text_start,
                     break_shaping_before,
                 });
                 0
             }
-            SourceElementKind::EndSpan(id) => {
+            SourceElementKind::StartSpan => {
                 analysis.elements.push(Element {
                     handle: element.handle,
-                    kind: ElementKind::EndSpan(id),
+                    kind: ElementKind::StartSpan,
+                    text_start,
+                    break_shaping_before,
+                });
+                0
+            }
+            SourceElementKind::EndSpan => {
+                analysis.elements.push(Element {
+                    handle: element.handle,
+                    kind: ElementKind::EndSpan,
                     text_start,
                     break_shaping_before,
                 });
@@ -334,10 +323,10 @@ impl TextAnalyzer {
                 state.break_shaping_before = true;
                 0
             }
-            SourceElementKind::Marker(id) => {
+            SourceElementKind::Marker => {
                 analysis.elements.push(Element {
                     handle: element.handle,
-                    kind: ElementKind::Marker(id),
+                    kind: ElementKind::Marker,
                     text_start,
                     break_shaping_before,
                 });
@@ -352,17 +341,12 @@ impl TextAnalyzer {
         state: &mut TransientState,
         analysis: &mut TextAnalysis,
         cluster: &PendingCluster,
-        is_replaced: bool,
     ) -> bool {
         if cluster.range.is_empty() {
             return false;
         }
         let cluster_start = analysis.clusters.len();
-        analysis.clusters.push(cluster, is_replaced);
-        // No further processing for replacement clusters
-        if is_replaced {
-            return true;
-        }
+        analysis.clusters.push(cluster);
         self.push_bidi_char(
             state,
             cluster.base_char,
@@ -429,12 +413,7 @@ impl TextAnalyzer {
     ) -> Option<()> {
         let segments = &mut analysis.segments;
         segments.clear();
-        // Filter replacement clusters
-        let mut clusters = analysis
-            .clusters
-            .iter()
-            .enumerate()
-            .filter(|(_, cluster)| !cluster.is_replaced);
+        let mut cluster_start = 0;
         let mut force_break = false;
         println!("bidi_items = {:?}", self.bidi_items);
         // Loop over the bidi items
@@ -476,8 +455,7 @@ impl TextAnalyzer {
                     // replacement clusters
                     for i in 0..count {
                         let level = levels.next().unwrap();
-                        // Find the range for the next non-replacement cluster
-                        let (cluster_idx, _) = clusters.next().unwrap();
+                        let cluster_idx = i + cluster_start;
                         if level != segment.bidi_level {
                             if !merged && i == 0 {
                                 // If we didn't merge and this is the first
@@ -491,6 +469,7 @@ impl TextAnalyzer {
                         }
                         segment.clusters.end = cluster_idx + 1;
                     }
+                    cluster_start += count;
                     if !segment.clusters.is_empty() {
                         segments.push(Segment::Text(segment.clone()));
                     }
@@ -500,7 +479,6 @@ impl TextAnalyzer {
                 }
             }
         }
-        core::mem::drop(clusters);
         // Propagate RTL flag to affected clusters
         for segment in segments.iter() {
             if let Segment::Text(segment) = segment {

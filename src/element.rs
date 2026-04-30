@@ -19,17 +19,14 @@ pub struct ObjectHandle(pub u32);
 pub enum ElementKind {
     /// A sequence of characters of the given length.
     Text(u32),
-    /// An inline object with a handle and length.
-    ///
-    /// If the length is greater than 0 then the object *replaces* that
-    /// range of the source text.
-    Object(ObjectHandle, u32),
-    /// The start of a region with some arbitrary identifier.
-    StartSpan(u64),
-    /// The end of a region with some arbitrary identifier.
-    EndSpan(u64),
-    /// Marks a position with some arbitrary identifier.
-    Marker(u64),
+    /// An inline object with a handle.
+    Object(ObjectHandle),
+    /// The start of a region.
+    StartSpan,
+    /// The end of a region.
+    EndSpan,
+    /// Marks an arbitrary position.
+    Marker,
 }
 
 /// A processed element.
@@ -50,7 +47,7 @@ impl Element {
     pub fn text_range(&self) -> Range<usize> {
         let start = self.text_start as usize;
         let len = match &self.kind {
-            ElementKind::Text(len) | ElementKind::Object(_, len) => *len,
+            ElementKind::Text(len) => *len,
             _ => 0,
         };
         start..start + len as usize
