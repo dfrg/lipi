@@ -16,7 +16,7 @@ pub use analysis::{ClusterAnalysis, Paragraph, Segment, TextAnalysis, TextSegmen
 pub use analyzer::TextAnalyzer;
 pub use bidi::BidiLevel;
 pub use cluster::{Cluster, ClusterAttributes, ClusterContent, WordKind};
-pub use element::{SourceElement, SourceElementKind};
+pub use element::{BidiControl, SourceElement, SourceElementKind};
 pub use parlance::{BidiDirection, BidiOverride, WordBreak};
 pub use properties::LineBreak;
 
@@ -332,7 +332,7 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::BreakSegmentation,
+                    SourceElementKind::SegmentationBreak,
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -356,8 +356,7 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::PushBidiIsolate(parlance::BidiDirection::Rtl),
-                    // SourceElementKind::PushBidiOverride(parlance::BidiOverride::Ltr),
+                    SourceElementKind::BidiControl(BidiControl::PushIsolate(BidiDirection::Rtl)),
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -369,8 +368,7 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    // SourceElementKind::PopBidiOverride,
-                    SourceElementKind::PopBidiIsolate,
+                    SourceElementKind::BidiControl(BidiControl::PopIsolate),
                 ),
                 (
                     TextAnalysisProperties::default(),
@@ -378,7 +376,7 @@ mod tests {
                 ),
                 (
                     TextAnalysisProperties::default(),
-                    SourceElementKind::BreakSegmentation,
+                    SourceElementKind::SegmentationBreak,
                 ),
             ],
         );
@@ -441,5 +439,7 @@ fn dump_cluster(text: &str, cluster: &Cluster) {
     };
     let rtl = if cluster.is_rtl() { '<' } else { ' ' };
     let count = cluster_text.chars().count();
-    println!("[{content} {line} {word} {rtl}]:     {cluster_text:?} ({cluster_text}) ({count} chars)");
+    println!(
+        "[{content} {line} {word} {rtl}]:     {cluster_text:?} ({cluster_text}) ({count} chars)"
+    );
 }

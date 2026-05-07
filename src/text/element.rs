@@ -3,12 +3,27 @@
 use super::{BidiDirection, BidiOverride};
 use crate::ElementHandle;
 
+/// Control over the bidirectional algorithm.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum BidiControl {
+    /// Start a bidirectional override.
+    PushOverride(BidiOverride),
+    /// End a bidirectional override.
+    PopOverride,
+    /// Start a bidirectional isolate.
+    PushIsolate(BidiDirection),
+    /// End a bidirectional isolate.
+    PopIsolate,
+}
+
 /// The type of a source element.
 #[derive(Copy, Clone, Debug)]
 pub enum SourceElementKind {
     /// A sequence of characters of the given length.
     Text(u32),
     /// An inline object with a direction.
+    /// 
+    /// This always acts as a segmentation break.
     Object(BidiDirection),
     /// The start of a region.
     StartSpan,
@@ -16,20 +31,14 @@ pub enum SourceElementKind {
     EndSpan,
     /// Marks an arbitrary position.
     Marker,
-    /// Start bidirectional override.
-    PushBidiOverride(BidiOverride),
-    /// End bidirectional override.
-    PopBidiOverride,
-    /// Start bidirectional isolate.
-    PushBidiIsolate(BidiDirection),
-    /// End bidirectional isolate.
-    PopBidiIsolate,
+    /// Control over the bidirectional algorithm.
+    BidiControl(BidiControl),
     /// Prevents segmentation and shaping across neighboring elements.
     ///
     /// The typical use is to avoid shaping across visual boundaries such as
     /// the start or end of a span that has non-zero borders, margin or
     /// padding.
-    BreakSegmentation,
+    SegmentationBreak,
 }
 
 impl Default for SourceElementKind {

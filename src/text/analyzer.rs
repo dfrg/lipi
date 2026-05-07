@@ -5,7 +5,7 @@ use super::{
     ClusterAttributes, PendingCluster, Segment, SourceElement, SourceElementKind, TextAnalysis,
     TextAnalysisProperties, TextAnalysisPropertiesProvider, TextSegment, WordKind,
 };
-use crate::{Element, ElementKind, ObjectHandle, Script, MAX_TEXT_LEN};
+use crate::{text::BidiControl, Element, ElementKind, ObjectHandle, Script, MAX_TEXT_LEN};
 use alloc::vec::Vec;
 use {
     icu_properties::props::{
@@ -126,30 +126,32 @@ impl TextAnalyzer {
                                 pending_bidi = Some((class, BidiItem::Object(handle)));
                                 flush_pending = true;
                             }
-                            SourceElementKind::PushBidiOverride(dir) => {
-                                let class = match dir {
-                                    BidiOverride::Ltr => BidiClass::LeftToRightOverride,
-                                    BidiOverride::Rtl => BidiClass::RightToLeftOverride,
-                                };
-                                pending_bidi = Some((class, BidiItem::Control));
-                            }
-                            SourceElementKind::PopBidiOverride => {
-                                pending_bidi =
-                                    Some((BidiClass::PopDirectionalFormat, BidiItem::Control));
-                            }
-                            SourceElementKind::PushBidiIsolate(dir) => {
-                                let class = match dir {
-                                    BidiDirection::Auto => BidiClass::FirstStrongIsolate,
-                                    BidiDirection::Ltr => BidiClass::LeftToRightIsolate,
-                                    BidiDirection::Rtl => BidiClass::RightToLeftIsolate,
-                                };
-                                pending_bidi = Some((class, BidiItem::Control));
-                            }
-                            SourceElementKind::PopBidiIsolate => {
-                                pending_bidi =
-                                    Some((BidiClass::PopDirectionalIsolate, BidiItem::Control));
-                            }
-                            SourceElementKind::BreakSegmentation => {
+                            SourceElementKind::BidiControl(control) => match control {
+                                BidiControl::PushOverride(dir) => {
+                                    let class = match dir {
+                                        BidiOverride::Ltr => BidiClass::LeftToRightOverride,
+                                        BidiOverride::Rtl => BidiClass::RightToLeftOverride,
+                                    };
+                                    pending_bidi = Some((class, BidiItem::Control));
+                                }
+                                BidiControl::PopOverride => {
+                                    pending_bidi =
+                                        Some((BidiClass::PopDirectionalFormat, BidiItem::Control));
+                                }
+                                BidiControl::PushIsolate(dir) => {
+                                    let class = match dir {
+                                        BidiDirection::Auto => BidiClass::FirstStrongIsolate,
+                                        BidiDirection::Ltr => BidiClass::LeftToRightIsolate,
+                                        BidiDirection::Rtl => BidiClass::RightToLeftIsolate,
+                                    };
+                                    pending_bidi = Some((class, BidiItem::Control));
+                                }
+                                BidiControl::PopIsolate => {
+                                    pending_bidi =
+                                        Some((BidiClass::PopDirectionalIsolate, BidiItem::Control));
+                                }
+                            },
+                            SourceElementKind::SegmentationBreak => {
                                 reset_line_iter = true;
                                 reset_grapheme_word_iters = true;
                                 // The break item won't push a class so the
@@ -312,14 +314,11 @@ impl TextAnalyzer {
                 });
                 0
             }
-            SourceElementKind::PushBidiOverride(..)
-            | SourceElementKind::PushBidiIsolate(..)
-            | SourceElementKind::PopBidiOverride
-            | SourceElementKind::PopBidiIsolate => {
+            SourceElementKind::BidiControl(..) => {
                 state.needs_bidi = true;
                 0
             }
-            SourceElementKind::BreakSegmentation => {
+            SourceElementKind::SegmentationBreak => {
                 state.break_shaping_before = true;
                 0
             }
