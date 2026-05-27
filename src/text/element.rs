@@ -22,7 +22,7 @@ pub enum SourceElementKind {
     /// A sequence of characters of the given length.
     Text(u32),
     /// An inline object with a direction.
-    /// 
+    ///
     /// This always acts as a segmentation break.
     Object(BidiDirection),
     /// The start of a region.

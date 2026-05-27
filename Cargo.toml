@@ -11,3 +11,6 @@ parlance = "0.1.0"
 icu_properties = "2.1.2"
 icu_segmenter = "2.1.2"
 icu_locale_core = "2.1.1"
+
+[dev-dependencies]
+icu_properties = "2.1.2"

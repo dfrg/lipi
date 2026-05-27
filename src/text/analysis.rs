@@ -166,8 +166,7 @@ impl ClusterAnalysis {
             cluster.range.clone()
         );
         self.flags.push(cluster.attrs);
-        self.ends
-            .push((cluster.range.end as u32) << 2);
+        self.ends.push((cluster.range.end as u32) << 2);
     }
 
     pub(super) fn set_rtl(&mut self, clusters: &Range<usize>) {

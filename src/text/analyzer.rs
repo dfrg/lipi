@@ -1,16 +1,17 @@
 //! Text analysis context.
 
 use super::{
-    bidi, is_real_script, properties::script_from_icu, BidiDirection, BidiOverride,
-    ClusterAttributes, PendingCluster, Segment, SourceElement, SourceElementKind, TextAnalysis,
-    TextAnalysisProperties, TextAnalysisPropertiesProvider, TextSegment, WordKind,
+    bidi::{self, BidiBracket, BidiClass},
+    is_real_script,
+    properties::script_from_icu,
+    BidiDirection, BidiOverride, ClusterAttributes, PendingCluster, Segment, SourceElement,
+    SourceElementKind, TextAnalysis, TextAnalysisProperties, TextAnalysisPropertiesProvider,
+    TextSegment, WordKind,
 };
 use crate::{text::BidiControl, Element, ElementKind, ObjectHandle, Script, MAX_TEXT_LEN};
 use alloc::vec::Vec;
 use {
-    icu_properties::props::{
-        BidiClass, BidiMirroringGlyph, BidiPairedBracketType, EnumeratedProperty,
-    },
+    icu_properties::props::{BidiMirroringGlyph, BidiPairedBracketType, EnumeratedProperty},
     icu_segmenter::options::WordBreakInvariantOptions,
 };
 
@@ -26,7 +27,7 @@ pub enum TextAnalysisError {
 pub struct TextAnalyzer {
     bidi: bidi::BidiResolver,
     bidi_classes: Vec<BidiClass>,
-    bidi_brackets: Vec<(usize, char, BidiMirroringGlyph)>,
+    bidi_brackets: Vec<(usize, char, BidiBracket)>,
     bidi_items: Vec<BidiItem>,
     text_segments: Vec<TextSegment>,
 }
@@ -118,9 +119,9 @@ impl TextAnalyzer {
                                 reset_line_iter = true;
                                 reset_grapheme_word_iters = true;
                                 let class = match dir {
-                                    BidiDirection::Auto => BidiClass::OtherNeutral,
-                                    BidiDirection::Ltr => BidiClass::LeftToRight,
-                                    BidiDirection::Rtl => BidiClass::RightToLeft,
+                                    BidiDirection::Auto => BidiClass::OTHER_NEUTRAL,
+                                    BidiDirection::Ltr => BidiClass::LEFT_TO_RIGHT,
+                                    BidiDirection::Rtl => BidiClass::RIGHT_TO_LEFT,
                                 };
                                 let handle = ObjectHandle(state.num_objects - 1);
                                 pending_bidi = Some((class, BidiItem::Object(handle)));
@@ -129,26 +130,30 @@ impl TextAnalyzer {
                             SourceElementKind::BidiControl(control) => match control {
                                 BidiControl::PushOverride(dir) => {
                                     let class = match dir {
-                                        BidiOverride::Ltr => BidiClass::LeftToRightOverride,
-                                        BidiOverride::Rtl => BidiClass::RightToLeftOverride,
+                                        BidiOverride::Ltr => BidiClass::LEFT_TO_RIGHT_OVERRIDE,
+                                        BidiOverride::Rtl => BidiClass::RIGHT_TO_LEFT_OVERRIDE,
                                     };
                                     pending_bidi = Some((class, BidiItem::Control));
                                 }
                                 BidiControl::PopOverride => {
-                                    pending_bidi =
-                                        Some((BidiClass::PopDirectionalFormat, BidiItem::Control));
+                                    pending_bidi = Some((
+                                        BidiClass::POP_DIRECTIONAL_FORMAT,
+                                        BidiItem::Control,
+                                    ));
                                 }
                                 BidiControl::PushIsolate(dir) => {
                                     let class = match dir {
-                                        BidiDirection::Auto => BidiClass::FirstStrongIsolate,
-                                        BidiDirection::Ltr => BidiClass::LeftToRightIsolate,
-                                        BidiDirection::Rtl => BidiClass::RightToLeftIsolate,
+                                        BidiDirection::Auto => BidiClass::FIRST_STRONG_ISOLATE,
+                                        BidiDirection::Ltr => BidiClass::LEFT_TO_RIGHT_ISOLATE,
+                                        BidiDirection::Rtl => BidiClass::RIGHT_TO_LEFT_ISOLATE,
                                     };
                                     pending_bidi = Some((class, BidiItem::Control));
                                 }
                                 BidiControl::PopIsolate => {
-                                    pending_bidi =
-                                        Some((BidiClass::PopDirectionalIsolate, BidiItem::Control));
+                                    pending_bidi = Some((
+                                        BidiClass::POP_DIRECTIONAL_ISOLATE,
+                                        BidiItem::Control,
+                                    ));
                                 }
                             },
                             SourceElementKind::SegmentationBreak => {
@@ -156,7 +161,7 @@ impl TextAnalyzer {
                                 reset_grapheme_word_iters = true;
                                 // The break item won't push a class so the
                                 // actual value is irrelevant
-                                pending_bidi = Some((BidiClass::OtherNeutral, BidiItem::Break));
+                                pending_bidi = Some((BidiClass::OTHER_NEUTRAL, BidiItem::Break));
                             }
                             _ => {
                                 if next_len > 0 {
@@ -379,11 +384,10 @@ impl TextAnalyzer {
         props: parley_data::Properties,
     ) {
         println!("pushing bidi char {ch:?}");
-        let class = props.bidi_class();
+        let class = BidiClass::from_icu4c_value(props.bidi_class().to_icu4c_value() as u8);
         let start = self.bidi_classes.len();
         state.needs_bidi = state.needs_bidi || bidi::needs_bidi_resolution(class);
-        let bracket = icu_properties::props::BidiMirroringGlyph::for_char(ch);
-        if bracket.paired_bracket_type != BidiPairedBracketType::None {
+        if let Some(bracket) = bidi_bracket_from_icu(ch) {
             self.bidi_brackets.push((start, ch, bracket));
         }
         self.bidi_classes.push(class);
@@ -487,6 +491,16 @@ impl TextAnalyzer {
             }
         }
         Some(())
+    }
+}
+
+fn bidi_bracket_from_icu(ch: char) -> Option<BidiBracket> {
+    let bracket = BidiMirroringGlyph::for_char(ch);
+    match bracket.paired_bracket_type {
+        BidiPairedBracketType::Open => bracket.mirroring_glyph.map(BidiBracket::Open),
+        BidiPairedBracketType::Close => bracket.mirroring_glyph.map(BidiBracket::Close),
+        BidiPairedBracketType::None => None,
+        _ => None,
     }
 }
 
