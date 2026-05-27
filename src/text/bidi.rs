@@ -67,19 +67,6 @@ pub(crate) struct BidiResolver {
 }
 
 impl BidiResolver {
-    /// Creates a new resolver.
-    pub(crate) fn new() -> Self {
-        Self {
-            base_level: 0,
-            levels: Vec::new(),
-            types: Vec::new(),
-            bracket_pairs: Vec::new(),
-            runs: Vec::new(),
-            indices: Vec::new(),
-            flags: 0,
-        }
-    }
-
     /// Returns the base level of the text.
     pub(crate) fn base_level(&self) -> u8 {
         self.base_level

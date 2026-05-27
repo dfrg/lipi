@@ -25,61 +25,46 @@ fn bidi_bracket_from_icu(ch: char) -> Option<BidiBracket> {
     }
 }
 
+fn parse_usize_list(input: &str) -> Vec<usize> {
+    input
+        .split_whitespace()
+        .map(|s| s.parse::<usize>().unwrap())
+        .collect()
+}
+
+fn parse_level_list(input: &str) -> Vec<String> {
+    input.split_whitespace().map(str::to_owned).collect()
+}
+
+fn test_data_lines(path: &str) -> impl Iterator<Item = String> {
+    let file = File::open(path).unwrap();
+    let reader = BufReader::new(file);
+    reader
+        .lines()
+        .map(|line| line.unwrap().trim().to_owned())
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+}
+
 #[test]
 fn bidi_test() {
     let mut state = TestState::new();
-    let file = File::open("tests/BidiTest.txt").unwrap();
-    let reader = BufReader::new(file);
     let mut codepoints = Vec::new();
     let mut levels = Vec::new();
     let mut order = Vec::new();
-    for line in reader.lines() {
-        let line = line.unwrap();
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("#") {
+    for line in test_data_lines("tests/BidiTest.txt") {
+        if let Some(rest) = line.strip_prefix("@Levels:\t") {
+            levels = parse_level_list(rest);
             continue;
         }
-        if line.starts_with("@Levels:") {
-            levels.clear();
-            for level in line.trim_start_matches("@Levels:\t").split(" ") {
-                levels.push(level.trim().to_owned());
-            }
-            continue;
-        }
-        if line.starts_with("@Reorder:") {
-            order.clear();
-            let line = line[9..].trim();
-            if line.is_empty() {
-                continue;
-            }
-            for ord in line.split(" ") {
-                let ord = ord.trim();
-                if ord.is_empty() {
-                    continue;
-                }
-                order.push(u32::from_str_radix(ord, 10).unwrap() as usize);
-            }
+        if let Some(rest) = line.strip_prefix("@Reorder:") {
+            order = parse_usize_list(rest);
             continue;
         }
         codepoints.clear();
-        let mut step = 0;
-        let mut dirs = 0;
-        for part in line.split("; ") {
-            match step {
-                0 => {
-                    for ty in part.split(" ") {
-                        codepoints.push(char_from_type(ty));
-                    }
-                    step += 1;
-                }
-                1 => {
-                    dirs = u32::from_str_radix(part.trim(), 16).unwrap();
-                    step += 1;
-                }
-                _ => break,
-            }
-        }
-        state.run_dirs(&codepoints, &levels, &order, dirs as u8);
+        let (types, dirs_hex) = line.split_once("; ").unwrap();
+        codepoints.extend(types.split_whitespace().map(char_from_type));
+        let dirs = u8::from_str_radix(dirs_hex.trim(), 16).unwrap();
+        state.run_dirs(&codepoints, &levels, &order, dirs);
     }
     state.finish();
 }
@@ -87,61 +72,27 @@ fn bidi_test() {
 #[test]
 fn bidi_character_test() {
     let mut state = TestState::new();
-    let file = File::open("tests/BidiCharacterTest.txt").unwrap();
-    let reader = BufReader::new(file);
-    let mut codepoints = Vec::new();
-    let mut levels = Vec::new();
-    let mut order = Vec::new();
-    for line in reader.lines() {
-        let line = line.unwrap();
-        let line = line.trim();
-        if line.is_empty() || line.starts_with("#") {
-            continue;
-        }
-        codepoints.clear();
-        levels.clear();
-        let mut dir = None;
-        let mut step = 0;
-        let mut base_level = 0;
-        for part in line.split(";") {
-            match step {
-                0 => {
-                    for codepoint in part.split(" ") {
-                        codepoints.push(unsafe {
-                            std::char::from_u32_unchecked(
-                                u32::from_str_radix(codepoint, 16).unwrap(),
-                            )
-                        });
-                    }
-                    step += 1;
-                }
-                1 => {
-                    match part {
-                        "0" => dir = Some(0),
-                        "1" => dir = Some(1),
-                        _ => dir = None,
-                    }
-                    step += 1;
-                }
-                2 => {
-                    base_level = u32::from_str_radix(part, 10).unwrap() as u8;
-                    step += 1;
-                }
-                3 => {
-                    for level in part.trim().split(" ") {
-                        levels.push(level.trim().to_owned());
-                    }
-                    step += 1;
-                }
-                4 => {
-                    order.clear();
-                    for ord in part.trim().split(" ") {
-                        order.push(u32::from_str_radix(ord, 10).unwrap() as usize);
-                    }
-                }
-                _ => {}
-            }
-        }
+    for line in test_data_lines("tests/BidiCharacterTest.txt") {
+        let parts = line.split(';').collect::<Vec<_>>();
+        // BidiCharacterTest fields:
+        // [0] code points, [1] paragraph direction hint, [2] resolved base level,
+        // [3] expected levels, [4] expected visual reorder.
+        assert_eq!(parts.len(), 5, "invalid BidiCharacterTest line: {line}");
+        let codepoints = parts[0]
+            .split_whitespace()
+            .map(|codepoint| {
+                let cp = u32::from_str_radix(codepoint, 16).unwrap();
+                char::from_u32(cp).unwrap()
+            })
+            .collect::<Vec<char>>();
+        let dir = match parts[1].trim() {
+            "0" => Some(0),
+            "1" => Some(1),
+            _ => None,
+        };
+        let base_level = parts[2].trim().parse::<u8>().unwrap();
+        let levels = parse_level_list(parts[3]);
+        let order = parse_usize_list(parts[4]);
         state.run(Some(base_level), &codepoints, &levels, &order, dir);
     }
     state.finish();
@@ -157,7 +108,7 @@ struct TestState {
 impl TestState {
     fn new() -> Self {
         Self {
-            resolver: BidiResolver::new(),
+            resolver: BidiResolver::default(),
             failures: Vec::new(),
             count: 0,
             failure_count: 0,
@@ -165,14 +116,10 @@ impl TestState {
     }
 
     fn run_dirs(&mut self, codepoints: &[char], levels: &[String], order: &[usize], dirs: u8) {
-        if dirs & 1 != 0 {
-            self.run(None, codepoints, levels, order, None);
-        }
-        if dirs & 2 != 0 {
-            self.run(None, codepoints, levels, order, Some(0));
-        }
-        if dirs & 4 != 0 {
-            self.run(None, codepoints, levels, order, Some(1));
+        for (mask, base_level) in [(1, None), (2, Some(0)), (4, Some(1))] {
+            if dirs & mask != 0 {
+                self.run(None, codepoints, levels, order, base_level);
+            }
         }
     }
 
@@ -208,7 +155,7 @@ impl TestState {
                 if is_removed_by_x9(classes[i]) {
                     "x".to_owned()
                 } else {
-                    format!("{}", *level)
+                    level.to_string()
                 }
             })
             .collect::<Vec<_>>();
@@ -217,7 +164,7 @@ impl TestState {
         test_order.retain(|i| !is_removed_by_x9(classes[*i]));
         if test_levels_str != levels
             || test_order != order
-            || (expected_base_level != None && expected_base_level != Some(test_base_level))
+            || expected_base_level.is_some_and(|expected| expected != test_base_level)
         {
             self.failure_count += 1;
             if self.failure_count <= 25 {
