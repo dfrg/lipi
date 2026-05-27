@@ -4,9 +4,9 @@ use super::{
     bidi::{self, BidiBracket, BidiClass},
     is_real_script,
     properties::script_from_icu,
-    BidiDirection, BidiOverride, ClusterAttributes, PendingCluster, Segment, SourceElement,
-    SourceElementKind, TextAnalysis, TextAnalysisProperties, TextAnalysisPropertiesProvider,
-    TextSegment, WordKind, Paragraph,
+    BidiDirection, BidiOverride, ClusterAttributes, Paragraph, PendingCluster, Segment,
+    SourceElement, SourceElementKind, TextAnalysis, TextAnalysisProperties,
+    TextAnalysisPropertiesProvider, TextSegment, WordKind,
 };
 use crate::{text::BidiControl, Element, ElementKind, ObjectHandle, Script, MAX_TEXT_LEN};
 use alloc::vec::Vec;
