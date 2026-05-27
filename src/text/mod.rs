@@ -69,11 +69,20 @@ mod tests {
     use crate::element::*;
 
     fn analyze(text: &str, props: Option<TextAnalysisProperties>) -> TextAnalysis {
+        analyze_with_base_direction(text, BidiDirection::Auto, props)
+    }
+
+    fn analyze_with_base_direction(
+        text: &str,
+        base_direction: BidiDirection,
+        props: Option<TextAnalysisProperties>,
+    ) -> TextAnalysis {
         let mut props = props.unwrap_or_default();
         let mut a = TextAnalysis::default();
         TextAnalyzer::default()
             .analyze(
                 text,
+                base_direction,
                 &mut props,
                 [SourceElement {
                     handle: ElementHandle::default(),
@@ -136,6 +145,7 @@ mod tests {
         TextAnalyzer::default()
             .analyze(
                 text,
+                BidiDirection::Auto,
                 &mut prop_set,
                 props
                     .iter()
@@ -162,6 +172,7 @@ mod tests {
         TextAnalyzer::default()
             .analyze(
                 text,
+                BidiDirection::Auto,
                 &mut prop_set,
                 props
                     .iter()
@@ -382,6 +393,54 @@ mod tests {
         );
         // println!("{:?}", &ar.clusters);
         dump_analysis(text, &ar);
+    }
+
+    #[test]
+    fn paragraph_levels_and_segment_ranges() {
+        // First paragraph is LTR, second paragraph is RTL.
+        let text = "abc\nאבג";
+        let analysis = analyze(text, None);
+
+        assert_eq!(analysis.paragraphs.len(), 2);
+        assert_eq!(analysis.paragraphs[0].level, 0);
+        assert_eq!(analysis.paragraphs[1].level, 1);
+
+        // Paragraph segment ranges should partition the segment stream.
+        assert_eq!(analysis.paragraphs[0].segments.start, 0);
+        assert_eq!(analysis.paragraphs[0].segments.end, analysis.paragraphs[1].segments.start);
+        assert_eq!(analysis.paragraphs[1].segments.end, analysis.segments.len());
+        assert!(analysis.paragraphs.iter().all(|p| !p.segments.is_empty()));
+    }
+
+    #[test]
+    fn paragraph_boundaries_split_segment_stream() {
+        let text = "abc\ndef";
+        let analysis = analyze(text, None);
+
+        assert_eq!(analysis.paragraphs.len(), 2);
+        assert!(analysis.segments.len() >= 2);
+
+        let p0 = analysis.paragraphs[0].segments.clone();
+        let p1 = analysis.paragraphs[1].segments.clone();
+        assert_eq!(p0.start, 0);
+        assert_eq!(p0.end, p1.start);
+        assert_eq!(p1.end, analysis.segments.len());
+
+        // Ensure no segment index belongs to more than one paragraph.
+        assert!(p0.end <= p1.start);
+    }
+
+    #[test]
+    fn explicit_base_direction_sets_paragraph_level() {
+        // Digits provide no strong paragraph direction, so the explicit base level should win.
+        let text = "123";
+        let ltr = analyze_with_base_direction(text, BidiDirection::Ltr, None);
+        let rtl = analyze_with_base_direction(text, BidiDirection::Rtl, None);
+
+        assert_eq!(ltr.paragraphs.len(), 1);
+        assert_eq!(rtl.paragraphs.len(), 1);
+        assert_eq!(ltr.paragraphs[0].level, 0);
+        assert_eq!(rtl.paragraphs[0].level, 1);
     }
 
     fn dump_analysis(text: &str, analysis: &TextAnalysis) {

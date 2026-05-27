@@ -66,8 +66,8 @@ impl Segment {
 pub struct Paragraph {
     /// Resolved bidirectional level.
     pub level: BidiLevel,
-    /// The range of text and clusters covered.
-    pub clusters: Range<usize>,
+    /// The range of segments covered.
+    pub segments: Range<usize>,
 }
 
 /// Results of segmentation and classification of clusters.
