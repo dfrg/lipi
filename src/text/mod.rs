@@ -6,11 +6,11 @@ mod bidi;
 mod cluster;
 mod element;
 mod properties;
+pub mod unicode;
 
 use crate::element::ElementHandle;
 use crate::{Language, Script};
 use core::ops::Range;
-use properties::LineBreakOptions;
 
 pub use analysis::{ClusterAnalysis, Paragraph, Segment, TextAnalysis, TextSegment};
 pub use analyzer::TextAnalyzer;
@@ -48,12 +48,6 @@ pub trait TextAnalysisPropertiesProvider {
     fn text_analysis_properties(&mut self, handle: &ElementHandle) -> TextAnalysisProperties;
 }
 
-impl TextAnalysisProperties {
-    fn line_break_options(&self) -> LineBreakOptions {
-        LineBreakOptions::new(self.line_break, self.word_break, self.language)
-    }
-}
-
 fn is_paragraph_separator(ch: char) -> bool {
     matches!(
         ch,
@@ -66,6 +60,171 @@ fn is_real_script(script: Script) -> bool {
 }
 
 #[cfg(test)]
+mod unicode_engine_tests {
+    use super::*;
+    use crate::element::ElementHandle;
+    use crate::text::unicode::{CharProperties, UnicodeEngine, UnicodeSegmentationContext};
+
+    #[derive(Copy, Clone, Default)]
+    struct TestEngine;
+
+    #[derive(Copy, Clone, Default)]
+    struct TestSegmenters;
+
+    struct TestSegmentationState<'s> {
+        text: &'s str,
+        next_grapheme_local: usize,
+        word_step: u8,
+        line_step: u8,
+    }
+
+    impl UnicodeEngine for TestEngine {
+        type SegmentationContext = TestSegmenters;
+
+        fn char_properties(&self, ch: char) -> CharProperties {
+            let bidi_class = if ch.is_ascii_alphabetic() {
+                bidi::BidiClass::LEFT_TO_RIGHT
+            } else {
+                bidi::BidiClass::OTHER_NEUTRAL
+            };
+            CharProperties {
+                script: if ch.is_ascii_alphabetic() {
+                    Script::from_bytes(*b"Latn")
+                } else {
+                    Script::COMMON
+                },
+                bidi_class,
+                bidi_bracket: None,
+                is_regional_indicator: false,
+                is_extended_pictographic: false,
+                is_emoji_presentation: false,
+            }
+        }
+
+        fn segmentation_context(&self) -> Self::SegmentationContext {
+            TestSegmenters
+        }
+    }
+
+    impl UnicodeSegmentationContext for TestSegmenters {
+        type Cursor<'s> = TestSegmentationState<'s>;
+
+        fn cursor<'s>(
+            &'s self,
+            text: &'s str,
+            _properties: TextAnalysisProperties,
+        ) -> Self::Cursor<'s> {
+            TestSegmentationState {
+                text,
+                next_grapheme_local: 0,
+                word_step: 0,
+                line_step: 0,
+            }
+        }
+    }
+
+    impl<'s> unicode::UnicodeSegmentationCursor<'s> for TestSegmentationState<'s> {
+        type Context = TestSegmenters;
+
+        fn reset_text_boundaries(
+            &mut self,
+            _context: &'s Self::Context,
+            text: &'s str,
+        ) {
+            self.text = text;
+            self.next_grapheme_local = 0;
+            self.word_step = 0;
+        }
+
+        fn reset_line_boundaries(
+            &mut self,
+            _context: &'s Self::Context,
+            text: &'s str,
+            _properties: TextAnalysisProperties,
+        ) {
+            self.text = text;
+            self.line_step = 0;
+        }
+
+        fn next_grapheme(&mut self) -> Option<usize> {
+            if self.next_grapheme_local > self.text.len() {
+                return None;
+            }
+            let out = self.next_grapheme_local;
+            if self.next_grapheme_local == self.text.len() {
+                self.next_grapheme_local = self.text.len() + 1;
+                return Some(out);
+            }
+            let mut next = self.next_grapheme_local + 1;
+            while next <= self.text.len() && !self.text.is_char_boundary(next) {
+                next += 1;
+            }
+            self.next_grapheme_local = next;
+            Some(out)
+        }
+
+        fn next_word(&mut self) -> Option<(usize, WordKind)> {
+            let out = match self.word_step {
+                0 => Some((0, WordKind::Other)),
+                1 => Some((self.text.len(), WordKind::Letter)),
+                _ => None,
+            };
+            self.word_step = self.word_step.saturating_add(1);
+            out
+        }
+
+        fn next_line(&mut self) -> Option<usize> {
+            let out = match self.line_step {
+                0 => Some(0),
+                1 => Some(self.text.len()),
+                _ => None,
+            };
+            self.line_step = self.line_step.saturating_add(1);
+            out
+        }
+    }
+
+    #[test]
+    fn analyze_with_custom_engine_works() {
+        let text = "ab";
+        struct PropProvider(TextAnalysisProperties);
+
+        impl TextAnalysisPropertiesProvider for PropProvider {
+            fn text_analysis_properties(
+                &mut self,
+                _handle: &ElementHandle,
+            ) -> TextAnalysisProperties {
+                self.0
+            }
+        }
+
+        let mut props = PropProvider(TextAnalysisProperties::default());
+        let mut analysis = TextAnalysis::default();
+        let mut analyzer = TextAnalyzer::default();
+        analyzer
+            .analyze_with_unicode_engine(
+                text,
+                BidiDirection::Auto,
+                &TestEngine,
+                &mut props,
+                [SourceElement {
+                    handle: ElementHandle::default(),
+                    kind: SourceElementKind::Text(text.len() as u32),
+                }]
+                .iter()
+                .copied(),
+                &mut analysis,
+            )
+            .unwrap();
+
+        assert_eq!(analysis.clusters.len(), 2);
+        assert_eq!(analysis.segments.len(), 1);
+        assert_eq!(analysis.paragraphs.len(), 1);
+        assert_eq!(analysis.paragraphs[0].segments, 0..1);
+    }
+}
+
+#[cfg(all(test, feature = "icu"))]
 mod tests {
     use super::*;
     use crate::element::*;

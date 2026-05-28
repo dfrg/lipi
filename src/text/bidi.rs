@@ -8,33 +8,66 @@ use alloc::vec::Vec;
 /// Type for a bidirectional level.
 pub type BidiLevel = u8;
 
-/// Bidirectional class value using ICU internal numeric representation.
+/// Bidirectional class value using ICU's numeric `UCharDirection` representation.
+///
+/// The numeric values used here match ICU4C's bidi class constants so custom
+/// Unicode engines can pass through ICU-derived data without remapping.
+/// See <https://unicode-org.github.io/icu-docs/apidoc/dev/icu4c/ubidi_8h.html>
+/// and the `UCharDirection` enum definition for the source values.
 #[derive(Copy, Clone, Default, Eq, PartialEq, Debug)]
-pub(crate) struct BidiClass(pub(crate) u8);
+pub struct BidiClass(pub(crate) u8);
 
 impl BidiClass {
+    /// Creates a bidi class from its ICU numeric value.
+    pub const fn new(value: u8) -> Self {
+        Self(value)
+    }
+
+    /// Left-to-right letter (L).
     pub const LEFT_TO_RIGHT: Self = Self(0);
+    /// Right-to-left letter (R).
     pub const RIGHT_TO_LEFT: Self = Self(1);
+    /// European number (EN).
     pub const EUROPEAN_NUMBER: Self = Self(2);
+    /// European separator (ES).
     pub const EUROPEAN_SEPARATOR: Self = Self(3);
+    /// European terminator (ET).
     pub const EUROPEAN_TERMINATOR: Self = Self(4);
+    /// Arabic number (AN).
     pub const ARABIC_NUMBER: Self = Self(5);
+    /// Common separator (CS).
     pub const COMMON_SEPARATOR: Self = Self(6);
+    /// Paragraph separator (B).
     pub const PARAGRAPH_SEPARATOR: Self = Self(7);
+    /// Segment separator (S).
     pub const SEGMENT_SEPARATOR: Self = Self(8);
+    /// Whitespace (WS).
     pub const WHITE_SPACE: Self = Self(9);
+    /// Other neutral (ON).
     pub const OTHER_NEUTRAL: Self = Self(10);
+    /// Left-to-right embedding (LRE).
     pub const LEFT_TO_RIGHT_EMBEDDING: Self = Self(11);
+    /// Left-to-right override (LRO).
     pub const LEFT_TO_RIGHT_OVERRIDE: Self = Self(12);
+    /// Arabic letter (AL).
     pub const ARABIC_LETTER: Self = Self(13);
+    /// Right-to-left embedding (RLE).
     pub const RIGHT_TO_LEFT_EMBEDDING: Self = Self(14);
+    /// Right-to-left override (RLO).
     pub const RIGHT_TO_LEFT_OVERRIDE: Self = Self(15);
+    /// Pop directional format (PDF).
     pub const POP_DIRECTIONAL_FORMAT: Self = Self(16);
+    /// Nonspacing mark (NSM).
     pub const NONSPACING_MARK: Self = Self(17);
+    /// Boundary neutral (BN).
     pub const BOUNDARY_NEUTRAL: Self = Self(18);
+    /// First strong isolate (FSI).
     pub const FIRST_STRONG_ISOLATE: Self = Self(19);
+    /// Left-to-right isolate (LRI).
     pub const LEFT_TO_RIGHT_ISOLATE: Self = Self(20);
+    /// Right-to-left isolate (RLI).
     pub const RIGHT_TO_LEFT_ISOLATE: Self = Self(21);
+    /// Pop directional isolate (PDI).
     pub const POP_DIRECTIONAL_ISOLATE: Self = Self(22);
 
     const fn mask(self) -> u32 {
@@ -42,13 +75,20 @@ impl BidiClass {
     }
 
     pub(crate) const fn from_icu4c_value(value: u8) -> Self {
-        Self(value)
+        Self::new(value)
     }
 }
 
+/// Paired bracket metadata used by the bidi algorithm.
+///
+/// The contained character is the paired bracket returned by the Unicode data
+/// source, and the variant identifies whether the source character is an open
+/// or close bracket for bidi pair resolution.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub(crate) enum BidiBracket {
+pub enum BidiBracket {
+    /// The source character is an opening bracket paired with the given char.
     Open(char),
+    /// The source character is a closing bracket paired with the given char.
     Close(char),
 }
 

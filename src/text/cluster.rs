@@ -1,7 +1,7 @@
 //! Cluster types for text analysis.
 
+use super::unicode::CharProperties;
 use core::ops::{Deref, DerefMut, Range};
-use {icu_properties::props::BinaryProperty, icu_segmenter::options::WordType as IcuWordType};
 
 /// A grapheme cluster.
 #[derive(Clone, Debug)]
@@ -130,18 +130,17 @@ impl ClusterAttributes {
         self.0 |= Self::RTL_BIT;
     }
 
-    pub(super) fn new(ch: char, char_props: parley_data::Properties) -> Self {
+    pub(super) fn new(ch: char, char_props: CharProperties) -> Self {
         let mut cluster = Self::default();
-        use icu_properties::props;
         cluster.set_content(if super::is_paragraph_separator(ch) {
             ClusterContent::ParagraphSeparator
-        } else if props::ExtendedPictographic::for_char(ch) {
-            if props::EmojiPresentation::for_char(ch) {
+        } else if char_props.is_extended_pictographic {
+            if char_props.is_emoji_presentation {
                 ClusterContent::Emoji
             } else {
                 ClusterContent::Symbol
             }
-        } else if char_props.is_region_indicator() {
+        } else if char_props.is_regional_indicator {
             ClusterContent::RegionalIndicator
         } else if ch == ' ' {
             ClusterContent::Space
@@ -224,12 +223,3 @@ pub enum WordKind {
     Other = 2,
 }
 
-impl WordKind {
-    pub(super) fn from_icu(wt: IcuWordType) -> Self {
-        match wt {
-            IcuWordType::Letter => Self::Letter,
-            IcuWordType::Number => Self::Number,
-            _ => Self::Other,
-        }
-    }
-}

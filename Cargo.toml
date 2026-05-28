@@ -5,12 +5,16 @@ authors = ["Chad Brokaw <cbrokaw@gmail.com>"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
 
+[features]
+default = ["icu"]
+icu = ["dep:parley_data", "dep:icu_properties", "dep:icu_segmenter", "dep:icu_locale_core"]
+
 [dependencies]
-parley_data = { git = "https://github.com/linebender/parley" }
+parley_data = { git = "https://github.com/linebender/parley", optional = true }
 parlance = "0.1.0"
-icu_properties = "2.1.2"
-icu_segmenter = "2.1.2"
-icu_locale_core = "2.1.1"
+icu_properties = { version = "2.1.2", optional = true }
+icu_segmenter = { version = "2.1.2", optional = true }
+icu_locale_core = { version = "2.1.1", optional = true }
 
 [dev-dependencies]
 icu_properties = "2.1.2"

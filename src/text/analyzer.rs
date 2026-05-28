@@ -3,20 +3,20 @@
 use super::{
     bidi::{self, BidiBracket, BidiClass},
     is_real_script,
-    properties::script_from_icu,
+    unicode::{
+        CharProperties, UnicodeEngine, UnicodeSegmentationContext, UnicodeSegmentationCursor,
+    },
     BidiDirection, BidiOverride, ClusterAttributes, Paragraph, PendingCluster, Segment,
     SourceElement, SourceElementKind, TextAnalysis, TextAnalysisProperties,
     TextAnalysisPropertiesProvider, TextSegment, WordKind,
 };
+#[cfg(feature = "icu")]
+use super::unicode::IcuUnicodeEngine;
 use crate::{
     text::BidiControl, Element, ElementKind, Language, ObjectHandle, Script, MAX_TEXT_LEN,
 };
 use alloc::vec::Vec;
 use core::ops::Range;
-use {
-    icu_properties::props::{BidiMirroringGlyph, BidiPairedBracketType, EnumeratedProperty},
-    icu_segmenter::options::WordBreakInvariantOptions,
-};
 
 /// Erros that can occur during text analysis.
 #[derive(Clone, Debug)]
@@ -68,14 +68,37 @@ struct AnalyzeState {
 }
 
 impl TextAnalyzer {
+    #[cfg(feature = "icu")]
     pub fn analyze(
         &mut self,
         text: &str,
         base_direction: BidiDirection,
         property_provider: &mut impl TextAnalysisPropertiesProvider,
-        mut elements: impl Iterator<Item = SourceElement>,
+        elements: impl Iterator<Item = SourceElement>,
         analysis: &mut TextAnalysis,
     ) -> Result<(), TextAnalysisError> {
+        self.analyze_with_unicode_engine(
+            text,
+            base_direction,
+            &IcuUnicodeEngine,
+            property_provider,
+            elements,
+            analysis,
+        )
+    }
+
+    pub fn analyze_with_unicode_engine<E>(
+        &mut self,
+        text: &str,
+        base_direction: BidiDirection,
+        unicode_engine: &E,
+        property_provider: &mut impl TextAnalysisPropertiesProvider,
+        mut elements: impl Iterator<Item = SourceElement>,
+        analysis: &mut TextAnalysis,
+    ) -> Result<(), TextAnalysisError>
+    where
+        E: UnicodeEngine,
+    {
         self.clear();
         analysis.clear();
         if text.len() > MAX_TEXT_LEN {
@@ -112,22 +135,25 @@ impl TextAnalyzer {
             prev_cluster_is_paragraph_separator: false,
         };
         state.scan.pending_cluster.lang = state.scan.properties.language;
-        // Build our initial iterator set
-        let grapheme_breaker = icu_segmenter::GraphemeClusterSegmenter::new();
-        let mut graphemes = BoundaryTracker::new(grapheme_breaker.segment_str(text), 0);
-        let word_breaker =
-            icu_segmenter::WordSegmenter::new_auto(WordBreakInvariantOptions::default());
-        let mut words = BoundaryTracker::new(word_breaker.segment_str(text), 0);
-        let mut line_options = state.scan.properties.line_break_options();
-        let mut line_breaker = icu_segmenter::LineSegmenter::new_auto(line_options.get());
-        let mut lines = BoundaryTracker::new(line_breaker.segment_str(text), 0);
+        let context = unicode_engine.segmentation_context();
+        let mut boundaries = context.cursor(text, state.scan.properties);
+        let mut grapheme_start = state.scan.element_start;
+        let mut word_start = state.scan.element_start;
+        let mut line_start = state.scan.element_start;
+        let mut graphemes = BoundaryTracker::new(state.scan.element_start);
+        let mut words = WordBoundaryTracker::new(state.scan.element_start);
+        let mut lines = BoundaryTracker::new(state.scan.element_start);
         while let Some((_char_idx, (byte_idx, ch))) = chars.next() {
-            let char_props = parley_data::Properties::get(ch);
+            let char_props = unicode_engine.char_properties(ch);
             // Do we need to move on to the next element?
             if byte_idx >= state.scan.element_end {
                 let mut next_word_kind = |idx: usize| {
-                    words.is_boundary(idx);
-                    WordKind::from_icu(words.iter.word_type())
+                    words.is_boundary(idx, || {
+                        boundaries
+                            .next_word()
+                            .map(|(ix, kind)| (ix + word_start, kind))
+                    });
+                    words.current_kind()
                 };
                 let transition = self.process_element_boundary(
                     &mut state,
@@ -145,35 +171,33 @@ impl TextAnalyzer {
                     ""
                 };
                 if transition.reset_grapheme_word_iters {
-                    graphemes = BoundaryTracker::new(
-                        grapheme_breaker.segment_str(next_text),
-                        transition.next_text_start,
-                    );
-                    words = BoundaryTracker::new(
-                        word_breaker.segment_str(next_text),
-                        transition.next_text_start,
-                    );
+                    boundaries.reset_text_boundaries(&context, next_text);
+                    grapheme_start = transition.next_text_start;
+                    word_start = transition.next_text_start;
+                    graphemes = BoundaryTracker::new(transition.next_text_start);
+                    words = WordBoundaryTracker::new(transition.next_text_start);
                 }
                 if transition.reset_line_iter {
-                    line_options = state.scan.properties.line_break_options();
-                    line_breaker = icu_segmenter::LineSegmenter::new_auto(line_options.get());
-                    lines = BoundaryTracker::new(
-                        line_breaker.segment_str(next_text),
-                        transition.next_text_start,
-                    );
+                    boundaries.reset_line_boundaries(&context, next_text, state.scan.properties);
+                    line_start = transition.next_text_start;
+                    lines = BoundaryTracker::new(transition.next_text_start);
                 }
             }
             // Now handle the next grapheme
-            if graphemes.is_boundary(byte_idx) {
+            if graphemes.is_boundary(byte_idx, || {
+                boundaries.next_grapheme().map(|ix| ix + grapheme_start)
+            }) {
                 let mut cluster = state.scan.pending_cluster.clone();
                 // Does it end a word?
-                if words.is_boundary(byte_idx) {
-                    cluster
-                        .attrs
-                        .set_word_kind(WordKind::from_icu(words.iter.word_type()));
+                if words.is_boundary(byte_idx, || {
+                    boundaries
+                        .next_word()
+                        .map(|(ix, kind)| (ix + word_start, kind))
+                }) {
+                    cluster.attrs.set_word_kind(words.current_kind());
                 }
                 // Is it a line break opportunity?
-                if lines.is_boundary(byte_idx) {
+                if lines.is_boundary(byte_idx, || boundaries.next_line().map(|ix| ix + line_start)) {
                     cluster.attrs.set_line_break();
                 }
                 cluster.range.end = byte_idx;
@@ -635,16 +659,15 @@ impl PendingCluster {
     fn reset(
         &mut self,
         ch: char,
-        char_props: parley_data::Properties,
+        char_props: CharProperties,
         language: Option<Language>,
         start: usize,
     ) {
         self.range.start = start;
         self.attrs = ClusterAttributes::new(ch, char_props);
-        self.bidi_class =
-            BidiClass::from_icu4c_value(char_props.bidi_class().to_icu4c_value() as u8);
-        self.bidi_bracket = bidi_bracket_from_icu(ch);
-        let script = script_from_icu(char_props.script());
+        self.bidi_class = char_props.bidi_class;
+        self.bidi_bracket = char_props.bidi_bracket;
+        let script = char_props.script;
         self.script = if is_real_script(script) {
             script
         } else {
@@ -652,16 +675,6 @@ impl PendingCluster {
         };
         self.base_char = ch;
         self.lang = language;
-    }
-}
-
-fn bidi_bracket_from_icu(ch: char) -> Option<BidiBracket> {
-    let bracket = BidiMirroringGlyph::for_char(ch);
-    match bracket.paired_bracket_type {
-        BidiPairedBracketType::Open => bracket.mirroring_glyph.map(BidiBracket::Open),
-        BidiPairedBracketType::Close => bracket.mirroring_glyph.map(BidiBracket::Close),
-        BidiPairedBracketType::None => None,
-        _ => None,
     }
 }
 
@@ -686,43 +699,71 @@ fn merge_scripts(prev: Script, next: Script) -> Option<Script> {
     }
 }
 
-/// Helper for syncing boundary state tracking between
-/// multiple iterators.
-struct BoundaryTracker<T> {
-    iter: T,
-    offset: usize,
+/// Helper for syncing boundary state tracking between successive indices.
+struct BoundaryTracker {
     cur_ix: usize,
 }
 
-impl<T> BoundaryTracker<T>
-where
-    T: Iterator<Item = usize>,
-{
-    fn new(iter: T, offset: usize) -> Self {
-        // The first character is always a valid boundary
+impl BoundaryTracker {
+    fn new(start: usize) -> Self {
+        Self { cur_ix: start }
+    }
+
+    fn is_boundary<F>(&mut self, ix: usize, mut next_boundary: F) -> bool
+    where
+        F: FnMut() -> Option<usize>,
+    {
+        if ix == self.cur_ix {
+            return true;
+        }
+        if ix < self.cur_ix {
+            return false;
+        }
+        while let Some(next_ix) = next_boundary() {
+            if next_ix >= ix {
+                self.cur_ix = next_ix;
+                return next_ix == ix;
+            }
+        }
+        false
+    }
+}
+
+/// Helper for word boundaries that carry the kind of the preceding segment.
+struct WordBoundaryTracker {
+    cur_ix: usize,
+    cur_kind: WordKind,
+}
+
+impl WordBoundaryTracker {
+    fn new(start: usize) -> Self {
         Self {
-            iter,
-            offset,
-            cur_ix: offset,
+            cur_ix: start,
+            cur_kind: WordKind::Other,
         }
     }
 
-    /// Is the given byte index a boundary state according to the inner
-    /// iterator?
-    fn is_boundary(&mut self, ix: usize) -> bool {
+    fn is_boundary<F>(&mut self, ix: usize, mut next_boundary: F) -> bool
+    where
+        F: FnMut() -> Option<(usize, WordKind)>,
+    {
         if ix == self.cur_ix {
-            true
-        } else if ix < self.cur_ix {
-            false
-        } else {
-            while let Some(next_ix) = self.iter.next() {
-                let next_ix = next_ix + self.offset;
-                if next_ix >= ix {
-                    self.cur_ix = next_ix;
-                    return next_ix == ix;
-                }
-            }
-            false
+            return true;
         }
+        if ix < self.cur_ix {
+            return false;
+        }
+        while let Some((next_ix, kind)) = next_boundary() {
+            if next_ix >= ix {
+                self.cur_ix = next_ix;
+                self.cur_kind = kind;
+                return next_ix == ix;
+            }
+        }
+        false
+    }
+
+    fn current_kind(&self) -> WordKind {
+        self.cur_kind
     }
 }
