@@ -380,7 +380,12 @@ impl TextAnalyzer {
         let paragraph_bidi_start = state.paragraph_bidi_start;
         let cluster_start = analysis.clusters.len();
         analysis.clusters.push(cluster);
-        self.push_bidi_char(state, cluster.base_char, cluster.bidi_class, cluster.bidi_bracket);
+        self.push_bidi_char(
+            state,
+            cluster.base_char,
+            cluster.bidi_class,
+            cluster.bidi_bracket,
+        );
         let cluster_end = analysis.clusters.len();
         let cluster_is_paragraph_separator = cluster.attrs.is_paragraph_separator();
         if cluster_is_paragraph_separator {

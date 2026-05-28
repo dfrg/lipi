@@ -378,8 +378,14 @@ mod tests {
         let analysis = analyze(" \t\u{00A0}\u{2003}", None);
 
         assert_eq!(analysis.clusters.len(), 4);
-        assert_eq!(analysis.clusters.get(0).unwrap().content(), ClusterContent::Space);
-        assert_eq!(analysis.clusters.get(1).unwrap().content(), ClusterContent::Tab);
+        assert_eq!(
+            analysis.clusters.get(0).unwrap().content(),
+            ClusterContent::Space
+        );
+        assert_eq!(
+            analysis.clusters.get(1).unwrap().content(),
+            ClusterContent::Tab
+        );
         assert_eq!(
             analysis.clusters.get(2).unwrap().content(),
             ClusterContent::NoBreakSpace
@@ -436,9 +442,18 @@ mod tests {
         assert_eq!(numbers.clusters.len(), 3);
         assert_eq!(other.clusters.len(), 1);
 
-        assert_eq!(letters.clusters.get(2).unwrap().word_kind(), Some(WordKind::Letter));
-        assert_eq!(numbers.clusters.get(2).unwrap().word_kind(), Some(WordKind::Number));
-        assert_eq!(other.clusters.get(0).unwrap().word_kind(), Some(WordKind::Other));
+        assert_eq!(
+            letters.clusters.get(2).unwrap().word_kind(),
+            Some(WordKind::Letter)
+        );
+        assert_eq!(
+            numbers.clusters.get(2).unwrap().word_kind(),
+            Some(WordKind::Number)
+        );
+        assert_eq!(
+            other.clusters.get(0).unwrap().word_kind(),
+            Some(WordKind::Other)
+        );
     }
 
     #[test]
