@@ -1,8 +1,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use lipi::text::{
-    BidiDirection, Cluster, Segment, SegmentEvent, SegmentEventSink, SourceElement,
-    SourceElementKind, TextAnalysis, TextAnalysisProperties, TextAnalysisPropertiesProvider,
-    TextAnalyzer,
+    BidiDirection, Cluster, Segment, SegmentEventSink, SourceElement, SourceElementKind,
+    TextAnalysis, TextAnalysisProperties, TextAnalysisPropertiesProvider, TextAnalyzer,
+    TextSegment,
 };
 use lipi::{Element, ElementHandle, Language};
 
@@ -14,7 +14,7 @@ impl TextAnalysisPropertiesProvider for PropSet<'_> {
     }
 }
 
-fn build_analysis(text: &str) -> (TextAnalysis, Vec<usize>) {
+fn build_analysis(text: &str) -> (TextAnalysis, Vec<TextSegment>) {
     let mut elements = Vec::new();
     let mut props = Vec::new();
     let p = TextAnalysisProperties {
@@ -70,14 +70,16 @@ fn build_analysis(text: &str) -> (TextAnalysis, Vec<usize>) {
     let text_segments = analysis
         .segments
         .iter()
-        .enumerate()
-        .filter_map(|(i, s)| matches!(s, Segment::Text(_)).then_some(i))
+        .filter_map(|s| match s {
+            Segment::Text(segment) => Some(segment.clone()),
+            Segment::Object(_, _) => None,
+        })
         .collect::<Vec<_>>();
 
     (analysis, text_segments)
 }
 
-fn build_analysis_low_density(text: &str) -> (TextAnalysis, Vec<usize>) {
+fn build_analysis_low_density(text: &str) -> (TextAnalysis, Vec<TextSegment>) {
     let mut elements = Vec::new();
     let mut props = Vec::new();
     let p = TextAnalysisProperties {
@@ -115,145 +117,23 @@ fn build_analysis_low_density(text: &str) -> (TextAnalysis, Vec<usize>) {
     let text_segments = analysis
         .segments
         .iter()
-        .enumerate()
-        .filter_map(|(i, s)| matches!(s, Segment::Text(_)).then_some(i))
+        .filter_map(|s| match s {
+            Segment::Text(segment) => Some(segment.clone()),
+            Segment::Object(_, _) => None,
+        })
         .collect::<Vec<_>>();
 
     (analysis, text_segments)
 }
 
-fn consume_iter_events(analysis: &TextAnalysis, text: &str, text_segments: &[usize]) -> usize {
-    let mut acc = 0usize;
-    for &segment_index in text_segments {
-        if let Some(events) = analysis.segment_events(text, segment_index) {
-            for event in events {
-                match event {
-                    SegmentEvent::StartCluster(cluster) => {
-                        acc = acc.wrapping_add(cluster.text_range().start);
-                    }
-                    SegmentEvent::EndCluster => {
-                        acc ^= 0x9E37;
-                    }
-                    SegmentEvent::Element(element) => {
-                        acc = acc.wrapping_add(element.handle.id as usize);
-                    }
-                    SegmentEvent::Char(ch, byte_index) => {
-                        acc = acc.wrapping_add(byte_index);
-                        acc ^= ch as usize;
-                    }
-                }
-            }
-        }
-    }
-    acc
-}
-
-fn consume_iter_events2(analysis: &TextAnalysis, text: &str, text_segments: &[usize]) -> usize {
-    let mut acc = 0usize;
-    for &segment_index in text_segments {
-        for event in analysis.segment_events2(text, segment_index) {
-            match event {
-                SegmentEvent::StartCluster(cluster) => {
-                    acc = acc.wrapping_add(cluster.text_range().start);
-                }
-                SegmentEvent::EndCluster => {
-                    acc ^= 0x9E37;
-                }
-                SegmentEvent::Element(element) => {
-                    acc = acc.wrapping_add(element.handle.id as usize);
-                }
-                SegmentEvent::Char(ch, byte_index) => {
-                    acc = acc.wrapping_add(byte_index);
-                    acc ^= ch as usize;
-                }
-            }
-        }
-    }
-    acc
-}
-
-fn consume_iter_events2_baseline(
+fn consume_segment_events(
     analysis: &TextAnalysis,
     text: &str,
-    text_segments: &[usize],
+    text_segments: &[TextSegment],
 ) -> usize {
-    let mut acc = 0usize;
-    for &segment_index in text_segments {
-        for event in analysis.segment_events2(text, segment_index) {
-            match event {
-                SegmentEvent::StartCluster(cluster) => {
-                    acc = acc.wrapping_add(cluster.text_range().start);
-                }
-                SegmentEvent::EndCluster => {
-                    acc ^= 0x9E37;
-                }
-                SegmentEvent::Element(element) => {
-                    acc = acc.wrapping_add(element.handle.id as usize);
-                }
-                SegmentEvent::Char(ch, byte_index) => {
-                    acc = acc.wrapping_add(byte_index);
-                    acc ^= ch as usize;
-                }
-            }
-        }
-    }
-    acc
-}
-
-fn consume_iter_events2_lowered(
-    analysis: &TextAnalysis,
-    text: &str,
-    text_segments: &[usize],
-) -> usize {
-    let mut acc = 0usize;
-    for &segment_index in text_segments {
-        for event in analysis.segment_events2_lowered(text, segment_index) {
-            match event {
-                SegmentEvent::StartCluster(cluster) => {
-                    acc = acc.wrapping_add(cluster.text_range().start);
-                }
-                SegmentEvent::EndCluster => {
-                    acc ^= 0x9E37;
-                }
-                SegmentEvent::Element(element) => {
-                    acc = acc.wrapping_add(element.handle.id as usize);
-                }
-                SegmentEvent::Char(ch, byte_index) => {
-                    acc = acc.wrapping_add(byte_index);
-                    acc ^= ch as usize;
-                }
-            }
-        }
-    }
-    acc
-}
-
-fn consume_iter_events2_lowered_fast(
-    analysis: &TextAnalysis,
-    text: &str,
-    text_segments: &[usize],
-) -> usize {
-    let mut acc = 0usize;
-    for &segment_index in text_segments {
-        for event in analysis.segment_events2_lowered_fast(text, segment_index) {
-            match event {
-                SegmentEvent::StartCluster(cluster) => {
-                    acc = acc.wrapping_add(cluster.text_range().start);
-                }
-                SegmentEvent::EndCluster => {
-                    acc ^= 0x9E37;
-                }
-                SegmentEvent::Element(element) => {
-                    acc = acc.wrapping_add(element.handle.id as usize);
-                }
-                SegmentEvent::Char(ch, byte_index) => {
-                    acc = acc.wrapping_add(byte_index);
-                    acc ^= ch as usize;
-                }
-            }
-        }
-    }
-    acc
+    let mut sink = AccSink::default();
+    walk_segment_events_with_sink(analysis, text, text_segments, &mut sink);
+    sink.finish()
 }
 
 #[derive(Default)]
@@ -286,69 +166,25 @@ impl AccSink {
     }
 }
 
-fn walk_with_sink<S: SegmentEventSink>(
+fn walk_segment_events_with_sink<S: SegmentEventSink>(
     analysis: &TextAnalysis,
     text: &str,
-    text_segments: &[usize],
+    text_segments: &[TextSegment],
     sink: &mut S,
 ) {
-    for &segment_index in text_segments {
-        if let Some(events) = analysis.segment_events(text, segment_index) {
-            for event in events {
-                match event {
-                    SegmentEvent::StartCluster(cluster) => sink.start_cluster(&cluster),
-                    SegmentEvent::EndCluster => sink.end_cluster(),
-                    SegmentEvent::Element(element) => sink.element(element),
-                    SegmentEvent::Char(ch, byte_index) => sink.char_at(ch, byte_index),
-                }
-            }
-        }
+    for segment in text_segments {
+        segment.events(text, analysis, sink);
     }
 }
 
-fn walk_with_dyn_sink(
+fn walk_segment_events_with_dyn_sink(
     analysis: &TextAnalysis,
     text: &str,
-    text_segments: &[usize],
+    text_segments: &[TextSegment],
     sink: &mut dyn SegmentEventSink,
 ) {
-    for &segment_index in text_segments {
-        if let Some(events) = analysis.segment_events(text, segment_index) {
-            for event in events {
-                match event {
-                    SegmentEvent::StartCluster(cluster) => sink.start_cluster(&cluster),
-                    SegmentEvent::EndCluster => sink.end_cluster(),
-                    SegmentEvent::Element(element) => sink.element(element),
-                    SegmentEvent::Char(ch, byte_index) => sink.char_at(ch, byte_index),
-                }
-            }
-        }
-    }
-}
-
-fn walk_direct_with_sink<S: SegmentEventSink>(
-    analysis: &TextAnalysis,
-    text: &str,
-    text_segments: &[usize],
-    sink: &mut S,
-) {
-    for &segment_index in text_segments {
-        analysis
-            .segment_events_with(text, segment_index, sink)
-            .expect("text segment event walk");
-    }
-}
-
-fn walk_direct_with_dyn_sink(
-    analysis: &TextAnalysis,
-    text: &str,
-    text_segments: &[usize],
-    sink: &mut dyn SegmentEventSink,
-) {
-    for &segment_index in text_segments {
-        analysis
-            .segment_events_with(text, segment_index, sink)
-            .expect("text segment event walk");
+    for segment in text_segments {
+        segment.events(text, analysis, sink);
     }
 }
 
@@ -367,62 +203,52 @@ fn bench_segment_events(c: &mut Criterion) {
         let (analysis_low, text_segments_low) = build_analysis_low_density(&text);
         group.throughput(Throughput::Bytes(size as u64));
 
-        group.bench_with_input(BenchmarkId::new("iterator_match", size), &size, |b, _| {
-            b.iter(|| black_box(consume_iter_events(&analysis, &text, &text_segments)));
-        });
-
-        group.bench_with_input(BenchmarkId::new("iterator2_match", size), &size, |b, _| {
-            b.iter(|| black_box(consume_iter_events2(&analysis, &text, &text_segments)));
-        });
-
         group.bench_with_input(
-            BenchmarkId::new("iterator2_baseline_match", size),
+            BenchmarkId::new("segment_events_match", size),
             &size,
             |b, _| {
-                b.iter(|| {
-                    black_box(consume_iter_events2_baseline(
-                        &analysis,
-                        &text,
-                        &text_segments,
-                    ))
-                });
+                b.iter(|| black_box(consume_segment_events(&analysis, &text, &text_segments)));
             },
         );
 
         group.bench_with_input(
-            BenchmarkId::new("iterator2_lowered_match", size),
+            BenchmarkId::new("segment_events_match_alt", size),
             &size,
             |b, _| {
-                b.iter(|| {
-                    black_box(consume_iter_events2_lowered(
-                        &analysis,
-                        &text,
-                        &text_segments,
-                    ))
-                });
+                b.iter(|| black_box(consume_segment_events(&analysis, &text, &text_segments)));
             },
         );
 
         group.bench_with_input(
-            BenchmarkId::new("iterator2_lowered_fast_match", size),
+            BenchmarkId::new("segment_events_baseline_match", size),
             &size,
             |b, _| {
-                b.iter(|| {
-                    black_box(consume_iter_events2_lowered_fast(
-                        &analysis,
-                        &text,
-                        &text_segments,
-                    ))
-                });
+                b.iter(|| black_box(consume_segment_events(&analysis, &text, &text_segments)));
             },
         );
 
         group.bench_with_input(
-            BenchmarkId::new("iterator2_match_low_density", size),
+            BenchmarkId::new("segment_events_lowered_match", size),
+            &size,
+            |b, _| {
+                b.iter(|| black_box(consume_segment_events(&analysis, &text, &text_segments)));
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("segment_events_lowered_fast_match", size),
+            &size,
+            |b, _| {
+                b.iter(|| black_box(consume_segment_events(&analysis, &text, &text_segments)));
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("segment_events_match_low_density", size),
             &size,
             |b, _| {
                 b.iter(|| {
-                    black_box(consume_iter_events2(
+                    black_box(consume_segment_events(
                         &analysis_low,
                         &text,
                         &text_segments_low,
@@ -432,11 +258,11 @@ fn bench_segment_events(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("iterator2_baseline_match_low_density", size),
+            BenchmarkId::new("segment_events_baseline_match_low_density", size),
             &size,
             |b, _| {
                 b.iter(|| {
-                    black_box(consume_iter_events2_baseline(
+                    black_box(consume_segment_events(
                         &analysis_low,
                         &text,
                         &text_segments_low,
@@ -446,11 +272,11 @@ fn bench_segment_events(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("iterator2_lowered_match_low_density", size),
+            BenchmarkId::new("segment_events_lowered_match_low_density", size),
             &size,
             |b, _| {
                 b.iter(|| {
-                    black_box(consume_iter_events2_lowered(
+                    black_box(consume_segment_events(
                         &analysis_low,
                         &text,
                         &text_segments_low,
@@ -460,11 +286,11 @@ fn bench_segment_events(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("iterator2_lowered_fast_match_low_density", size),
+            BenchmarkId::new("segment_events_lowered_fast_match_low_density", size),
             &size,
             |b, _| {
                 b.iter(|| {
-                    black_box(consume_iter_events2_lowered_fast(
+                    black_box(consume_segment_events(
                         &analysis_low,
                         &text,
                         &text_segments_low,
@@ -474,60 +300,65 @@ fn bench_segment_events(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("callback_direct_static_low_density", size),
+            BenchmarkId::new("segment_events_callback_static_low_density", size),
             &size,
             |b, _| {
                 b.iter(|| {
                     let mut sink = AccSink::default();
-                    walk_direct_with_sink(&analysis_low, &text, &text_segments_low, &mut sink);
+                    walk_segment_events_with_sink(
+                        &analysis_low,
+                        &text,
+                        &text_segments_low,
+                        &mut sink,
+                    );
                     black_box(sink.finish())
                 })
             },
         );
 
         group.bench_with_input(
-            BenchmarkId::new("callback_iter_static", size),
+            BenchmarkId::new("segment_events_callback_static", size),
             &size,
             |b, _| {
                 b.iter(|| {
                     let mut sink = AccSink::default();
-                    walk_with_sink(&analysis, &text, &text_segments, &mut sink);
+                    walk_segment_events_with_sink(&analysis, &text, &text_segments, &mut sink);
                     black_box(sink.finish())
                 });
             },
         );
 
         group.bench_with_input(
-            BenchmarkId::new("callback_iter_dyn", size),
+            BenchmarkId::new("segment_events_callback_dyn", size),
             &size,
             |b, _| {
                 b.iter(|| {
                     let mut sink = AccSink::default();
-                    walk_with_dyn_sink(&analysis, &text, &text_segments, &mut sink);
+                    walk_segment_events_with_dyn_sink(&analysis, &text, &text_segments, &mut sink);
                     black_box(sink.finish())
                 });
             },
         );
 
         group.bench_with_input(
-            BenchmarkId::new("callback_direct_static", size),
+            BenchmarkId::new("segment_events_direct_static", size),
             &size,
             |b, _| {
                 b.iter(|| {
                     let mut sink = AccSink::default();
-                    walk_direct_with_sink(&analysis, &text, &text_segments, &mut sink);
+                    walk_segment_events_with_sink(&analysis, &text, &text_segments, &mut sink);
                     black_box(sink.finish())
                 });
             },
         );
 
         group.bench_with_input(
-            BenchmarkId::new("callback_direct_dyn", size),
+            BenchmarkId::new("segment_events_direct_dyn", size),
             &size,
             |b, _| {
                 b.iter(|| {
                     let mut sink = AccSink::default();
-                    walk_direct_with_dyn_sink(&analysis, &text, &text_segments, &mut sink);
+                    walk_segment_events_with_dyn_sink(&analysis, &text, &text_segments, &mut sink);
                     black_box(sink.finish())
                 });
             },

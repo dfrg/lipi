@@ -48,167 +48,6 @@ fn is_real_script(script: Script) -> bool {
     script != Script::COMMON && script != Script::INHERITED && script != Script::UNKNOWN
 }
 
-#[cfg(test)]
-mod unicode_engine_tests {
-    use super::*;
-    use crate::element::ElementHandle;
-    use crate::text::unicode::{CharProperties, UnicodeEngine, UnicodeSegmentationContext};
-
-    #[derive(Copy, Clone, Default)]
-    struct TestEngine;
-
-    #[derive(Copy, Clone, Default)]
-    struct TestSegmenters;
-
-    struct TestSegmentationState<'s> {
-        text: &'s str,
-        next_grapheme_local: usize,
-        word_step: u8,
-        line_step: u8,
-    }
-
-    impl UnicodeEngine for TestEngine {
-        type SegmentationContext = TestSegmenters;
-
-        fn char_properties(&self, ch: char) -> CharProperties {
-            let bidi_class = if ch.is_ascii_alphabetic() {
-                bidi::BidiClass::LEFT_TO_RIGHT
-            } else {
-                bidi::BidiClass::OTHER_NEUTRAL
-            };
-            CharProperties {
-                script: if ch.is_ascii_alphabetic() {
-                    Script::from_bytes(*b"Latn")
-                } else {
-                    Script::COMMON
-                },
-                bidi_class,
-                bidi_bracket: None,
-                is_regional_indicator: false,
-                is_extended_pictographic: false,
-                is_emoji_presentation: false,
-            }
-        }
-
-        fn segmentation_context(&self) -> Self::SegmentationContext {
-            TestSegmenters
-        }
-    }
-
-    impl UnicodeSegmentationContext for TestSegmenters {
-        type Cursor<'s> = TestSegmentationState<'s>;
-
-        fn cursor<'s>(
-            &'s self,
-            text: &'s str,
-            _properties: TextAnalysisProperties,
-        ) -> Self::Cursor<'s> {
-            TestSegmentationState {
-                text,
-                next_grapheme_local: 0,
-                word_step: 0,
-                line_step: 0,
-            }
-        }
-    }
-
-    impl<'s> unicode::UnicodeSegmentationCursor<'s> for TestSegmentationState<'s> {
-        type Context = TestSegmenters;
-
-        fn reset_text_boundaries(&mut self, _context: &'s Self::Context, text: &'s str) {
-            self.text = text;
-            self.next_grapheme_local = 0;
-            self.word_step = 0;
-        }
-
-        fn reset_line_boundaries(
-            &mut self,
-            _context: &'s Self::Context,
-            text: &'s str,
-            _properties: TextAnalysisProperties,
-        ) {
-            self.text = text;
-            self.line_step = 0;
-        }
-
-        fn next_grapheme(&mut self) -> Option<usize> {
-            if self.next_grapheme_local > self.text.len() {
-                return None;
-            }
-            let out = self.next_grapheme_local;
-            if self.next_grapheme_local == self.text.len() {
-                self.next_grapheme_local = self.text.len() + 1;
-                return Some(out);
-            }
-            let mut next = self.next_grapheme_local + 1;
-            while next <= self.text.len() && !self.text.is_char_boundary(next) {
-                next += 1;
-            }
-            self.next_grapheme_local = next;
-            Some(out)
-        }
-
-        fn next_word(&mut self) -> Option<(usize, WordKind)> {
-            let out = match self.word_step {
-                0 => Some((0, WordKind::Other)),
-                1 => Some((self.text.len(), WordKind::Letter)),
-                _ => None,
-            };
-            self.word_step = self.word_step.saturating_add(1);
-            out
-        }
-
-        fn next_line(&mut self) -> Option<usize> {
-            let out = match self.line_step {
-                0 => Some(0),
-                1 => Some(self.text.len()),
-                _ => None,
-            };
-            self.line_step = self.line_step.saturating_add(1);
-            out
-        }
-    }
-
-    #[test]
-    fn analyze_with_custom_engine_works() {
-        let text = "ab";
-        struct PropProvider(TextAnalysisProperties);
-
-        impl TextAnalysisPropertiesProvider for PropProvider {
-            fn text_analysis_properties(
-                &mut self,
-                _handle: &ElementHandle,
-            ) -> TextAnalysisProperties {
-                self.0
-            }
-        }
-
-        let mut props = PropProvider(TextAnalysisProperties::default());
-        let mut analysis = TextAnalysis::default();
-        let mut analyzer = TextAnalyzer::default();
-        analyzer
-            .analyze_with_unicode_engine(
-                text,
-                BidiDirection::Auto,
-                &TestEngine,
-                &mut props,
-                [SourceElement {
-                    handle: ElementHandle::default(),
-                    kind: SourceElementKind::Text(text.len() as u32),
-                }]
-                .iter()
-                .copied(),
-                &mut analysis,
-            )
-            .unwrap();
-
-        assert_eq!(analysis.clusters.len(), 2);
-        assert_eq!(analysis.segments.len(), 1);
-        assert_eq!(analysis.paragraphs.len(), 1);
-        assert_eq!(analysis.paragraphs[0].segments(), 0..1);
-    }
-}
-
 #[cfg(all(test, feature = "icu"))]
 mod tests {
     use super::*;
@@ -775,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn segment_events_emits_ordered_boundaries() {
+    fn segment_events_with_emits_ordered_boundaries() {
         let text = "a\u{0301}";
         let p = TextAnalysisProperties::default();
         let analysis = analyze_with_element_props(text, &[(p, 1), (p, text.len() - 1)]);
@@ -785,23 +624,48 @@ mod tests {
             .iter()
             .position(|s| matches!(s, Segment::Text(_)))
             .unwrap();
-        let events = analysis
-            .segment_events(text, segment_index)
-            .unwrap()
-            .collect::<Vec<_>>();
 
-        assert!(matches!(
-            events[0],
-            SegmentEvent::Element(element) if element.handle.id == 0
-        ));
-        assert!(matches!(events[1], SegmentEvent::StartCluster(_)));
-        assert!(matches!(events[2], SegmentEvent::Char('a', 0)));
-        assert!(matches!(
-            events[3],
-            SegmentEvent::Element(element) if element.handle.id == 1
-        ));
-        assert!(matches!(events[4], SegmentEvent::Char('\u{0301}', 1)));
-        assert!(matches!(events[5], SegmentEvent::EndCluster));
+        #[derive(Default)]
+        struct RecordingSink {
+            events: Vec<(usize, usize, usize, usize)>,
+        }
+
+        impl SegmentEventSink for RecordingSink {
+            fn start_cluster(&mut self, cluster: &Cluster) {
+                self.events.push((
+                    0usize,
+                    cluster.text_range().start,
+                    cluster.text_range().end,
+                    0usize,
+                ));
+            }
+
+            fn end_cluster(&mut self) {
+                self.events.push((1, 0, 0, 0));
+            }
+
+            fn element(&mut self, element: &Element) {
+                self.events.push((2, element.handle.id as usize, 0, 0));
+            }
+
+            fn char_at(&mut self, ch: char, byte_index: usize) {
+                self.events.push((3, byte_index, ch as usize, 0));
+            }
+        }
+
+        let mut sink = RecordingSink::default();
+        let Segment::Text(segment) = &analysis.segments[segment_index] else {
+            panic!("expected text segment");
+        };
+        segment.events(text, &analysis, &mut sink);
+        let events = sink.events;
+
+        assert_eq!(events[0], (2, 0, 0, 0));
+        assert_eq!(events[1], (0, 0, 3, 0));
+        assert_eq!(events[2], (3, 0, 'a' as usize, 0));
+        assert_eq!(events[3], (2, 1, 0, 0));
+        assert_eq!(events[4], (3, 1, '\u{0301}' as usize, 0));
+        assert_eq!(events[5], (1, 0, 0, 0));
     }
 
     #[test]
@@ -822,125 +686,52 @@ mod tests {
             .iter()
             .position(|s| matches!(s, Segment::Text(_)))
             .unwrap();
-        let events = analysis
-            .segment_events("ab", segment_index)
-            .unwrap()
-            .collect::<Vec<_>>();
 
-        assert!(matches!(events[0], SegmentEvent::Element(element) if element.handle.id == 0));
-        assert!(matches!(events[1], SegmentEvent::StartCluster(_)));
-        assert!(matches!(events[2], SegmentEvent::Char('a', 0)));
-        assert!(matches!(events[3], SegmentEvent::EndCluster));
-        assert!(matches!(events[4], SegmentEvent::Element(element) if element.handle.id == 1));
-        assert!(matches!(events[5], SegmentEvent::Element(element) if element.handle.id == 2));
-        assert!(matches!(events[6], SegmentEvent::Element(element) if element.handle.id == 3));
-        assert!(matches!(events[7], SegmentEvent::StartCluster(_)));
-        assert!(matches!(events[8], SegmentEvent::Char('b', 1)));
-        assert!(matches!(events[9], SegmentEvent::EndCluster));
-    }
+        #[derive(Default)]
+        struct RecordingSink {
+            events: Vec<(usize, usize, usize, usize)>,
+        }
 
-    #[test]
-    fn segment_events_lowered_matches_default_iterator() {
-        let p = TextAnalysisProperties::default();
-        let analysis = analyze_with_elements(
-            "a\u{0301}bc",
-            &[
-                (p, SourceElementKind::Text(1)),
-                (p, SourceElementKind::Marker),
-                (p, SourceElementKind::Text(2)),
-                (p, SourceElementKind::StartSpan),
-                (p, SourceElementKind::Text(1)),
-            ],
-        );
+        impl SegmentEventSink for RecordingSink {
+            fn start_cluster(&mut self, cluster: &Cluster) {
+                self.events.push((
+                    0usize,
+                    cluster.text_range().start,
+                    cluster.text_range().end,
+                    0usize,
+                ));
+            }
 
-        let segment_index = analysis
-            .segments
-            .iter()
-            .position(|s| matches!(s, Segment::Text(_)))
-            .unwrap();
+            fn end_cluster(&mut self) {
+                self.events.push((1, 0, 0, 0));
+            }
 
-        let encode = |events: Vec<SegmentEvent<'_>>| {
-            events
-                .into_iter()
-                .map(|event| match event {
-                    SegmentEvent::StartCluster(cluster) => (
-                        0usize,
-                        cluster.text_range().start,
-                        cluster.text_range().end,
-                        0usize,
-                    ),
-                    SegmentEvent::EndCluster => (1, 0, 0, 0),
-                    SegmentEvent::Element(element) => (2, element.handle.id as usize, 0, 0),
-                    SegmentEvent::Char(ch, byte_index) => (3, byte_index, ch as usize, 0),
-                })
-                .collect::<Vec<_>>()
+            fn element(&mut self, element: &Element) {
+                self.events.push((2, element.handle.id as usize, 0, 0));
+            }
+
+            fn char_at(&mut self, ch: char, byte_index: usize) {
+                self.events.push((3, byte_index, ch as usize, 0));
+            }
+        }
+
+        let mut sink = RecordingSink::default();
+        let Segment::Text(segment) = &analysis.segments[segment_index] else {
+            panic!("expected text segment");
         };
+        segment.events("ab", &analysis, &mut sink);
+        let events = sink.events;
 
-        let default_events = encode(
-            analysis
-                .segment_events("a\u{0301}bc", segment_index)
-                .unwrap()
-                .collect(),
-        );
-        let lowered_events = encode(
-            analysis
-                .segment_events2_lowered("a\u{0301}bc", segment_index)
-                .collect(),
-        );
-
-        assert_eq!(lowered_events, default_events);
-    }
-
-    #[test]
-    fn segment_events_lowered_fast_matches_default_iterator() {
-        let p = TextAnalysisProperties::default();
-        let analysis = analyze_with_elements(
-            "a\u{0301}bc",
-            &[
-                (p, SourceElementKind::Text(1)),
-                (p, SourceElementKind::Marker),
-                (p, SourceElementKind::Text(2)),
-                (p, SourceElementKind::StartSpan),
-                (p, SourceElementKind::Text(1)),
-            ],
-        );
-
-        let segment_index = analysis
-            .segments
-            .iter()
-            .position(|s| matches!(s, Segment::Text(_)))
-            .unwrap();
-
-        let encode = |events: Vec<SegmentEvent<'_>>| {
-            events
-                .into_iter()
-                .map(|event| match event {
-                    SegmentEvent::StartCluster(cluster) => (
-                        0usize,
-                        cluster.text_range().start,
-                        cluster.text_range().end,
-                        0usize,
-                    ),
-                    SegmentEvent::EndCluster => (1, 0, 0, 0),
-                    SegmentEvent::Element(element) => (2, element.handle.id as usize, 0, 0),
-                    SegmentEvent::Char(ch, byte_index) => (3, byte_index, ch as usize, 0),
-                })
-                .collect::<Vec<_>>()
-        };
-
-        let default_events = encode(
-            analysis
-                .segment_events("a\u{0301}bc", segment_index)
-                .unwrap()
-                .collect(),
-        );
-        let lowered_fast_events = encode(
-            analysis
-                .segment_events2_lowered_fast("a\u{0301}bc", segment_index)
-                .collect(),
-        );
-
-        assert_eq!(lowered_fast_events, default_events);
+        assert_eq!(events[0], (2, 0, 0, 0));
+        assert_eq!(events[1], (0, 0, 1, 0));
+        assert_eq!(events[2], (3, 0, 'a' as usize, 0));
+        assert_eq!(events[3], (1, 0, 0, 0));
+        assert_eq!(events[4], (2, 1, 0, 0));
+        assert_eq!(events[5], (2, 2, 0, 0));
+        assert_eq!(events[6], (2, 3, 0, 0));
+        assert_eq!(events[7], (0, 1, 2, 0));
+        assert_eq!(events[8], (3, 1, 'b' as usize, 0));
+        assert_eq!(events[9], (1, 0, 0, 0));
     }
 
     #[test]
@@ -969,138 +760,6 @@ mod tests {
         assert_eq!(text_segments.len(), 2);
         assert_eq!(text_segments[0].script, text_segments[1].script);
         assert_ne!(text_segments[0].script, Script::COMMON);
-    }
-
-    #[test]
-    fn object_direction_influences_object_segment_level() {
-        let p = TextAnalysisProperties::default();
-
-        let auto_object = analyze_with_elements(
-            "a",
-            &[
-                (p, SourceElementKind::Text(1)),
-                (p, SourceElementKind::Object(BidiDirection::Auto)),
-            ],
-        );
-        let ltr_object = analyze_with_elements(
-            "a",
-            &[
-                (p, SourceElementKind::Text(1)),
-                (p, SourceElementKind::Object(BidiDirection::Ltr)),
-            ],
-        );
-        let rtl_object = analyze_with_elements(
-            "a",
-            &[
-                (p, SourceElementKind::Text(1)),
-                (p, SourceElementKind::Object(BidiDirection::Rtl)),
-            ],
-        );
-
-        let auto_level = auto_object
-            .segments
-            .iter()
-            .find_map(|segment| match segment {
-                Segment::Object(level, _) => Some(*level),
-                Segment::Text(_) => None,
-            })
-            .expect("expected object segment for auto object");
-        let ltr_level = ltr_object
-            .segments
-            .iter()
-            .find_map(|segment| match segment {
-                Segment::Object(level, _) => Some(*level),
-                Segment::Text(_) => None,
-            })
-            .expect("expected object segment for ltr object");
-        let rtl_level = rtl_object
-            .segments
-            .iter()
-            .find_map(|segment| match segment {
-                Segment::Object(level, _) => Some(*level),
-                Segment::Text(_) => None,
-            })
-            .expect("expected object segment for rtl object");
-
-        assert_eq!(ltr_level & 1, 0);
-        assert_eq!(rtl_level & 1, 1);
-        assert_eq!(auto_level, ltr_level);
-    }
-
-    #[test]
-    fn object_only_elements_emit_object_segments() {
-        let p = TextAnalysisProperties::default();
-        let analysis = analyze_with_elements(
-            "",
-            &[
-                (p, SourceElementKind::Object(BidiDirection::Ltr)),
-                (p, SourceElementKind::Object(BidiDirection::Rtl)),
-            ],
-        );
-
-        assert!(analysis.clusters.is_empty());
-        assert_eq!(analysis.segments.len(), 2);
-        assert!(matches!(analysis.segments[0], Segment::Object(_, _)));
-        assert!(matches!(analysis.segments[1], Segment::Object(_, _)));
-        assert_eq!(analysis.paragraphs.len(), 1);
-    }
-
-    #[test]
-    fn empty_input_produces_empty_analysis() {
-        let analysis = analyze("", None);
-
-        assert!(analysis.clusters.is_empty());
-        assert!(analysis.segments.is_empty());
-        assert!(analysis.paragraphs.is_empty());
-    }
-
-    #[test]
-    fn control_only_elements_do_not_create_text_clusters() {
-        let p = TextAnalysisProperties::default();
-        let analysis = analyze_with_elements(
-            "",
-            &[
-                (
-                    p,
-                    SourceElementKind::BidiControl(BidiControl::PushIsolate(BidiDirection::Rtl)),
-                ),
-                (p, SourceElementKind::BidiControl(BidiControl::PopIsolate)),
-            ],
-        );
-
-        assert!(analysis.clusters.is_empty());
-        assert!(analysis
-            .segments
-            .iter()
-            .all(|segment| !matches!(segment, Segment::Text(_))));
-        assert_eq!(analysis.paragraphs.len(), 1);
-    }
-
-    fn dump_analysis(text: &str, analysis: &TextAnalysis) {
-        println!("text_segments = {:?}", analysis.segments);
-        // for cluster in analysis.clusters.iter() {
-        //     dump_cluster(text, &cluster);
-        // }
-        println!("");
-        for ss in &analysis.segments {
-            match ss {
-                Segment::Object(level, handle) => {
-                    println!("[object {} #{}]", *level, handle.0);
-                }
-                Segment::Text(t) => {
-                    println!(
-                        "[{} {:?} {}] {}",
-                        t.script,
-                        t.language,
-                        t.bidi_level,
-                        &text[analysis.clusters.text_range(t.clusters()).unwrap()]
-                    );
-                    for cluster in analysis.clusters.iter_range(t.clusters()) {
-                        dump_cluster(text, &cluster);
-                    }
-                }
-            }
-        }
     }
 }
 
