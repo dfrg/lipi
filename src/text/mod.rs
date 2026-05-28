@@ -11,8 +11,8 @@ use crate::element::ElementHandle;
 use crate::{Language, Script};
 
 pub use analysis::{
-    Cluster, ClusterAnalysis, ClusterAttributes, ClusterContent, Paragraph, Segment, TextAnalysis,
-    TextSegment, WordKind,
+    Cluster, ClusterAnalysis, ClusterAttributes, ClusterContent, ClusterRangeIter, Paragraph,
+    Segment, SegmentEvent, SegmentEventSink, TextAnalysis, TextSegment, WordKind,
 };
 pub use analyzer::TextAnalyzer;
 pub use bidi::BidiLevel;
@@ -772,6 +772,123 @@ mod tests {
 
         assert_eq!(same_language_text_segments, 1);
         assert_eq!(mixed_language_text_segments, 2);
+    }
+
+    #[test]
+    fn segment_events_emits_ordered_boundaries() {
+        let text = "a\u{0301}";
+        let p = TextAnalysisProperties::default();
+        let analysis = analyze_with_element_props(text, &[(p, 1), (p, text.len() - 1)]);
+
+        let segment_index = analysis
+            .segments
+            .iter()
+            .position(|s| matches!(s, Segment::Text(_)))
+            .unwrap();
+        let events = analysis
+            .segment_events(text, segment_index)
+            .unwrap()
+            .collect::<Vec<_>>();
+
+        assert!(matches!(
+            events[0],
+            SegmentEvent::Element(element) if element.handle.id == 0
+        ));
+        assert!(matches!(events[1], SegmentEvent::StartCluster(_)));
+        assert!(matches!(events[2], SegmentEvent::Char('a', 0)));
+        assert!(matches!(
+            events[3],
+            SegmentEvent::Element(element) if element.handle.id == 1
+        ));
+        assert!(matches!(events[4], SegmentEvent::Char('\u{0301}', 1)));
+        assert!(matches!(events[5], SegmentEvent::EndCluster));
+    }
+
+    #[test]
+    fn segment_events_emit_non_text_elements() {
+        let p = TextAnalysisProperties::default();
+        let analysis = analyze_with_elements(
+            "ab",
+            &[
+                (p, SourceElementKind::Text(1)),
+                (p, SourceElementKind::Marker),
+                (p, SourceElementKind::StartSpan),
+                (p, SourceElementKind::Text(1)),
+            ],
+        );
+
+        let segment_index = analysis
+            .segments
+            .iter()
+            .position(|s| matches!(s, Segment::Text(_)))
+            .unwrap();
+        let events = analysis
+            .segment_events("ab", segment_index)
+            .unwrap()
+            .collect::<Vec<_>>();
+
+        assert!(matches!(events[0], SegmentEvent::Element(element) if element.handle.id == 0));
+        assert!(matches!(events[1], SegmentEvent::StartCluster(_)));
+        assert!(matches!(events[2], SegmentEvent::Char('a', 0)));
+        assert!(matches!(events[3], SegmentEvent::EndCluster));
+        assert!(matches!(events[4], SegmentEvent::Element(element) if element.handle.id == 1));
+        assert!(matches!(events[5], SegmentEvent::Element(element) if element.handle.id == 2));
+        assert!(matches!(events[6], SegmentEvent::Element(element) if element.handle.id == 3));
+        assert!(matches!(events[7], SegmentEvent::StartCluster(_)));
+        assert!(matches!(events[8], SegmentEvent::Char('b', 1)));
+        assert!(matches!(events[9], SegmentEvent::EndCluster));
+    }
+
+    #[test]
+    fn segment_events_lowered_matches_default_iterator() {
+        let p = TextAnalysisProperties::default();
+        let analysis = analyze_with_elements(
+            "a\u{0301}bc",
+            &[
+                (p, SourceElementKind::Text(1)),
+                (p, SourceElementKind::Marker),
+                (p, SourceElementKind::Text(2)),
+                (p, SourceElementKind::StartSpan),
+                (p, SourceElementKind::Text(1)),
+            ],
+        );
+
+        let segment_index = analysis
+            .segments
+            .iter()
+            .position(|s| matches!(s, Segment::Text(_)))
+            .unwrap();
+
+        let encode = |events: Vec<SegmentEvent<'_>>| {
+            events
+                .into_iter()
+                .map(|event| match event {
+                    SegmentEvent::StartCluster(cluster) => (
+                        0usize,
+                        cluster.text_range().start,
+                        cluster.text_range().end,
+                        0usize,
+                    ),
+                    SegmentEvent::EndCluster => (1, 0, 0, 0),
+                    SegmentEvent::Element(element) => (2, element.handle.id as usize, 0, 0),
+                    SegmentEvent::Char(ch, byte_index) => (3, byte_index, ch as usize, 0),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let default_events = encode(
+            analysis
+                .segment_events("a\u{0301}bc", segment_index)
+                .unwrap()
+                .collect(),
+        );
+        let lowered_events = encode(
+            analysis
+                .segment_events2_lowered("a\u{0301}bc", segment_index)
+                .collect(),
+        );
+
+        assert_eq!(lowered_events, default_events);
     }
 
     #[test]
