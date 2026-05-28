@@ -892,6 +892,58 @@ mod tests {
     }
 
     #[test]
+    fn segment_events_lowered_fast_matches_default_iterator() {
+        let p = TextAnalysisProperties::default();
+        let analysis = analyze_with_elements(
+            "a\u{0301}bc",
+            &[
+                (p, SourceElementKind::Text(1)),
+                (p, SourceElementKind::Marker),
+                (p, SourceElementKind::Text(2)),
+                (p, SourceElementKind::StartSpan),
+                (p, SourceElementKind::Text(1)),
+            ],
+        );
+
+        let segment_index = analysis
+            .segments
+            .iter()
+            .position(|s| matches!(s, Segment::Text(_)))
+            .unwrap();
+
+        let encode = |events: Vec<SegmentEvent<'_>>| {
+            events
+                .into_iter()
+                .map(|event| match event {
+                    SegmentEvent::StartCluster(cluster) => (
+                        0usize,
+                        cluster.text_range().start,
+                        cluster.text_range().end,
+                        0usize,
+                    ),
+                    SegmentEvent::EndCluster => (1, 0, 0, 0),
+                    SegmentEvent::Element(element) => (2, element.handle.id as usize, 0, 0),
+                    SegmentEvent::Char(ch, byte_index) => (3, byte_index, ch as usize, 0),
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let default_events = encode(
+            analysis
+                .segment_events("a\u{0301}bc", segment_index)
+                .unwrap()
+                .collect(),
+        );
+        let lowered_fast_events = encode(
+            analysis
+                .segment_events2_lowered_fast("a\u{0301}bc", segment_index)
+                .collect(),
+        );
+
+        assert_eq!(lowered_fast_events, default_events);
+    }
+
+    #[test]
     fn script_backprop_assigns_following_real_script() {
         let en_props = TextAnalysisProperties {
             language: Some(Language::parse_prefix("en").unwrap().0),

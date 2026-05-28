@@ -43,7 +43,7 @@ impl TextAnalysis {
         let Segment::Text(_) = self.segments.get(segment_index)? else {
             return None;
         };
-        Some(self.segment_events2(text, segment_index))
+        Some(self.segment_events2_lowered(text, segment_index))
     }
 
     /// Visits events for a text segment using a callback sink.
@@ -140,6 +140,7 @@ impl TextAnalysis {
         let mut element_index = 0usize;
         let mut element_range = 0..0;
 
+        #[derive(Clone)]
         struct Cursor<'a> {
             cluster: Cluster,
             start: usize,
@@ -158,6 +159,7 @@ impl TextAnalysis {
             NeedCluster,
             PreStartElements(Cursor<'a>),
             Start(Cursor<'a>),
+            FastChars(Cursor<'a>),
             NextChar(Cursor<'a>),
             EmitElement(Cursor<'a>, Pending),
             EmitChar(Cursor<'a>, Pending),
@@ -248,8 +250,25 @@ impl TextAnalysis {
                 }
                 State::Start(cursor) => {
                     let event = SegmentEvent::StartCluster(cursor.cluster.clone());
-                    state = State::NextChar(cursor);
+                    let has_interior_element_start = elements
+                        .get(element_index + 1)
+                        .map(|next| next.text_range().start < cursor.end)
+                        .unwrap_or(false);
+                    state = if has_interior_element_start {
+                        State::NextChar(cursor)
+                    } else {
+                        State::FastChars(cursor)
+                    };
                     return Some(event);
+                }
+                State::FastChars(mut cursor) => {
+                    let Some((local_byte_index, ch)) = cursor.chars.next() else {
+                        state = State::EmitEnd;
+                        continue;
+                    };
+                    let byte_index = cursor.start + local_byte_index;
+                    state = State::FastChars(cursor);
+                    return Some(SegmentEvent::Char(ch, byte_index));
                 }
                 State::NextChar(mut cursor) => {
                     let Some((local_byte_index, ch)) = cursor.chars.next() else {
@@ -512,6 +531,211 @@ impl TextAnalysis {
                 State::EndCluster => {
                     state = State::NeedCluster;
                     return Some(SegmentEvent::EndCluster);
+                }
+            }
+        })
+    }
+
+    /// Reconstructed lowered iterator from the prior fast benchmark run.
+    pub fn segment_events2_lowered_fast<'a>(
+        &'a self,
+        text: &'a str,
+        segment_index: usize,
+    ) -> impl Iterator<Item = SegmentEvent<'a>> + 'a {
+        let cluster_range = match self.segments.get(segment_index) {
+            Some(Segment::Text(segment)) => segment.clusters(),
+            _ => 0..0,
+        };
+
+        let mut clusters = self.clusters.iter_range(cluster_range.clone());
+        let mut element_index = 0usize;
+        let mut element_range = 0..0;
+
+        #[derive(Clone)]
+        struct Cursor<'a> {
+            cluster: Cluster,
+            start: usize,
+            end: usize,
+            chars: core::str::CharIndices<'a>,
+        }
+
+        #[derive(Copy, Clone)]
+        struct Pending {
+            byte_index: usize,
+            ch: char,
+            ends_cluster: bool,
+        }
+
+        enum State<'a> {
+            NeedCluster,
+            StartElements(Cursor<'a>),
+            StartCluster(Cursor<'a>),
+            NextChar(Cursor<'a>),
+            CharElements(Cursor<'a>, Pending),
+            EmitChar(Cursor<'a>, Pending),
+            EndCluster,
+            Done,
+        }
+
+        let mut state = if let Some(first_cluster_start) =
+            self.clusters.get(cluster_range.start).map(|c| c.text_range().start)
+        {
+            if let Some((ix, range)) = Self::next_element_for_byte(&self.elements, 0, first_cluster_start)
+            {
+                element_index = ix;
+                element_range = range;
+                State::NeedCluster
+            } else {
+                State::Done
+            }
+        } else {
+            State::Done
+        };
+
+        let elements = &self.elements;
+        core::iter::from_fn(move || {
+            loop {
+                match mem::replace(&mut state, State::Done) {
+                    State::Done => {
+                        state = State::Done;
+                        return None;
+                    }
+                    State::NeedCluster => {
+                        let Some(cluster) = clusters.next() else {
+                            state = State::Done;
+                            return None;
+                        };
+                        let range = cluster.text_range();
+                        if range.is_empty() {
+                            state = State::NeedCluster;
+                            continue;
+                        }
+                        let Some(cluster_slice) = text.get(range.clone()) else {
+                            state = State::Done;
+                            return None;
+                        };
+
+                        if range.start >= element_range.end && element_range.start != range.start {
+                            let Some((ix, next_range)) =
+                                Self::next_element_for_byte(elements, element_index, range.start)
+                            else {
+                                state = State::Done;
+                                return None;
+                            };
+                            element_index = ix;
+                            element_range = next_range;
+                        }
+
+                        let cursor = Cursor {
+                            cluster,
+                            start: range.start,
+                            end: range.end,
+                            chars: cluster_slice.char_indices(),
+                        };
+
+                        state = if element_range.start == cursor.start {
+                            State::StartElements(cursor)
+                        } else {
+                            State::StartCluster(cursor)
+                        };
+                        continue;
+                    }
+                    State::StartElements(cursor) => {
+                        if element_range.start != cursor.start {
+                            state = State::StartCluster(cursor);
+                            continue;
+                        }
+
+                        let event = SegmentEvent::Element(&elements[element_index]);
+                        if let Some((next_index, next_range)) =
+                            Self::next_element_for_byte(elements, element_index + 1, cursor.start)
+                        {
+                            if next_range.start == cursor.start {
+                                element_index = next_index;
+                                element_range = next_range;
+                                state = State::StartElements(cursor);
+                            } else {
+                                element_index = next_index;
+                                element_range = next_range;
+                                state = State::StartCluster(cursor);
+                            }
+                        } else {
+                            state = State::StartCluster(cursor);
+                        }
+                        return Some(event);
+                    }
+                    State::StartCluster(cursor) => {
+                        state = State::NextChar(cursor.clone());
+                        return Some(SegmentEvent::StartCluster(cursor.cluster));
+                    }
+                    State::NextChar(mut cursor) => {
+                        let Some((local_byte_index, ch)) = cursor.chars.next() else {
+                            state = State::EndCluster;
+                            continue;
+                        };
+
+                        let byte_index = cursor.start + local_byte_index;
+                        let pending = Pending {
+                            byte_index,
+                            ch,
+                            ends_cluster: byte_index + ch.len_utf8() == cursor.end,
+                        };
+
+                        if byte_index >= element_range.end && element_range.start != byte_index {
+                            let Some((ix, next_range)) =
+                                Self::next_element_for_byte(elements, element_index, byte_index)
+                            else {
+                                state = State::Done;
+                                return None;
+                            };
+                            element_index = ix;
+                            element_range = next_range;
+                        }
+
+                        state = if element_range.start == byte_index && byte_index != cursor.start {
+                            State::CharElements(cursor, pending)
+                        } else {
+                            State::EmitChar(cursor, pending)
+                        };
+                        continue;
+                    }
+                    State::CharElements(cursor, pending) => {
+                        if element_range.start != pending.byte_index {
+                            state = State::EmitChar(cursor, pending);
+                            continue;
+                        }
+
+                        let event = SegmentEvent::Element(&elements[element_index]);
+                        if let Some((next_index, next_range)) =
+                            Self::next_element_for_byte(elements, element_index + 1, pending.byte_index)
+                        {
+                            if next_range.start == pending.byte_index {
+                                element_index = next_index;
+                                element_range = next_range;
+                                state = State::CharElements(cursor, pending);
+                            } else {
+                                element_index = next_index;
+                                element_range = next_range;
+                                state = State::EmitChar(cursor, pending);
+                            }
+                        } else {
+                            state = State::EmitChar(cursor, pending);
+                        }
+                        return Some(event);
+                    }
+                    State::EmitChar(cursor, pending) => {
+                        let event = SegmentEvent::Char(pending.ch, pending.byte_index);
+                        state = if pending.ends_cluster {
+                            State::EndCluster
+                        } else {
+                            State::NextChar(cursor)
+                        };
+                        return Some(event);
+                    }
+                    State::EndCluster => {
+                        state = State::NeedCluster;
+                        return Some(SegmentEvent::EndCluster);
+                    }
                 }
             }
         })

@@ -228,6 +228,34 @@ fn consume_iter_events2_lowered(
     acc
 }
 
+fn consume_iter_events2_lowered_fast(
+    analysis: &TextAnalysis,
+    text: &str,
+    text_segments: &[usize],
+) -> usize {
+    let mut acc = 0usize;
+    for &segment_index in text_segments {
+        for event in analysis.segment_events2_lowered_fast(text, segment_index) {
+            match event {
+                SegmentEvent::StartCluster(cluster) => {
+                    acc = acc.wrapping_add(cluster.text_range().start);
+                }
+                SegmentEvent::EndCluster => {
+                    acc ^= 0x9E37;
+                }
+                SegmentEvent::Element(element) => {
+                    acc = acc.wrapping_add(element.handle.id as usize);
+                }
+                SegmentEvent::Char(ch, byte_index) => {
+                    acc = acc.wrapping_add(byte_index);
+                    acc ^= ch as usize;
+                }
+            }
+        }
+    }
+    acc
+}
+
 #[derive(Default)]
 struct AccSink {
     acc: usize,
@@ -376,6 +404,20 @@ fn bench_segment_events(c: &mut Criterion) {
         );
 
         group.bench_with_input(
+            BenchmarkId::new("iterator2_lowered_fast_match", size),
+            &size,
+            |b, _| {
+                b.iter(|| {
+                    black_box(consume_iter_events2_lowered_fast(
+                        &analysis,
+                        &text,
+                        &text_segments,
+                    ))
+                });
+            },
+        );
+
+        group.bench_with_input(
             BenchmarkId::new("iterator2_match_low_density", size),
             &size,
             |b, _| {
@@ -409,6 +451,20 @@ fn bench_segment_events(c: &mut Criterion) {
             |b, _| {
                 b.iter(|| {
                     black_box(consume_iter_events2_lowered(
+                        &analysis_low,
+                        &text,
+                        &text_segments_low,
+                    ))
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("iterator2_lowered_fast_match_low_density", size),
+            &size,
+            |b, _| {
+                b.iter(|| {
+                    black_box(consume_iter_events2_lowered_fast(
                         &analysis_low,
                         &text,
                         &text_segments_low,
