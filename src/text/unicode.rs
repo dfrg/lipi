@@ -37,11 +37,7 @@ pub trait UnicodeSegmentationContext {
     ///
     /// The returned segmenter produces boundaries relative to `text` and
     /// configured for the supplied analysis `properties`.
-    fn cursor<'s>(
-        &'s self,
-        text: &'s str,
-        properties: TextAnalysisProperties,
-    ) -> Self::Cursor<'s>;
+    fn cursor<'s>(&'s self, text: &'s str, properties: TextAnalysisProperties) -> Self::Cursor<'s>;
 }
 
 /// Active segmentation state over a particular text slice.
@@ -52,11 +48,7 @@ pub trait UnicodeSegmentationCursor<'s> {
     /// Resets grapheme and word streams to operate on a new `text` slice.
     ///
     /// After reset, subsequent boundaries are relative to the new slice.
-    fn reset_text_boundaries(
-        &mut self,
-        context: &'s Self::Context,
-        text: &'s str,
-    );
+    fn reset_text_boundaries(&mut self, context: &'s Self::Context, text: &'s str);
 
     /// Resets line-break stream to operate on a new `text` slice.
     ///
@@ -107,11 +99,11 @@ pub use icu::{IcuUnicodeEngine, IcuUnicodeSegmentationState, IcuUnicodeSegmenter
 
 #[cfg(feature = "icu")]
 mod icu {
+    use super::super::{LineBreak, WordBreak};
     use super::{
         BidiBracket, BidiClass, CharProperties, Script, TextAnalysisProperties, UnicodeEngine,
-        UnicodeSegmentationCursor, UnicodeSegmentationContext, WordKind,
+        UnicodeSegmentationContext, UnicodeSegmentationCursor, WordKind,
     };
-    use super::super::{LineBreak, WordBreak};
     use core::convert::TryInto;
     use icu_locale_core::LanguageIdentifier;
     use icu_properties::props::{
@@ -239,13 +231,12 @@ mod icu {
     impl<'s> UnicodeSegmentationCursor<'s> for IcuUnicodeSegmentationState<'s> {
         type Context = IcuUnicodeSegmenters;
 
-        fn reset_text_boundaries(
-            &mut self,
-            context: &'s Self::Context,
-            text: &'s str,
-        ) {
+        fn reset_text_boundaries(&mut self, context: &'s Self::Context, text: &'s str) {
             self.graphemes = context.grapheme_segmenter.segment_str(text);
-            self.words = context.word_segmenter.segment_str(text).iter_with_word_type();
+            self.words = context
+                .word_segmenter
+                .segment_str(text)
+                .iter_with_word_type();
         }
 
         fn reset_line_boundaries(
@@ -295,5 +286,4 @@ mod icu {
             .map(Script::from_bytes)
             .unwrap_or(Script::UNKNOWN)
     }
-
 }

@@ -222,4 +222,3 @@ pub enum WordKind {
     /// Other type of word.
     Other = 2,
 }
-

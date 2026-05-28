@@ -126,11 +126,7 @@ mod unicode_engine_tests {
     impl<'s> unicode::UnicodeSegmentationCursor<'s> for TestSegmentationState<'s> {
         type Context = TestSegmenters;
 
-        fn reset_text_boundaries(
-            &mut self,
-            _context: &'s Self::Context,
-            text: &'s str,
-        ) {
+        fn reset_text_boundaries(&mut self, _context: &'s Self::Context, text: &'s str) {
             self.text = text;
             self.next_grapheme_local = 0;
             self.word_step = 0;

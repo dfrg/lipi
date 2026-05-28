@@ -1,5 +1,7 @@
 //! Text analysis context.
 
+#[cfg(feature = "icu")]
+use super::unicode::IcuUnicodeEngine;
 use super::{
     bidi::{self, BidiBracket, BidiClass},
     is_real_script,
@@ -10,8 +12,6 @@ use super::{
     SourceElement, SourceElementKind, TextAnalysis, TextAnalysisProperties,
     TextAnalysisPropertiesProvider, TextSegment, WordKind,
 };
-#[cfg(feature = "icu")]
-use super::unicode::IcuUnicodeEngine;
 use crate::{
     text::BidiControl, Element, ElementKind, Language, ObjectHandle, Script, MAX_TEXT_LEN,
 };
@@ -197,7 +197,9 @@ impl TextAnalyzer {
                     cluster.attrs.set_word_kind(words.current_kind());
                 }
                 // Is it a line break opportunity?
-                if lines.is_boundary(byte_idx, || boundaries.next_line().map(|ix| ix + line_start)) {
+                if lines.is_boundary(byte_idx, || {
+                    boundaries.next_line().map(|ix| ix + line_start)
+                }) {
                     cluster.attrs.set_line_break();
                 }
                 cluster.range.end = byte_idx;
