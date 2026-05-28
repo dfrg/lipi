@@ -2,9 +2,9 @@ use crate::{
     text::{BidiLevel, Segment, SegmentEventSink, TextAnalysis, TextSegment},
     ElementHandle,
 };
-use alloc::{string::String, vec::Vec};
 #[cfg(feature = "fontique")]
 use alloc::boxed::Box;
+use alloc::{string::String, vec::Vec};
 use core::mem;
 use parlance::{FontStyle, FontWeight, FontWidth, GenericFamily, Language, Script};
 
@@ -247,7 +247,11 @@ impl FontiqueSelector {
 
         let mut query = self.collection.query(&mut self.source_cache);
         query.set_families(query_families);
-        query.set_attributes(FontiqueAttributes::new(props.width, props.style, props.weight));
+        query.set_attributes(FontiqueAttributes::new(
+            props.width,
+            props.style,
+            props.weight,
+        ));
         query.set_fallbacks(FontiqueFallbackKey::new(script, language.as_ref()));
 
         let mut best: Option<(Font, usize)> = None;
@@ -316,7 +320,8 @@ impl FontSelector for FontiqueSelector {
 
             let mut remaining = &chars[cursor..element_end];
             while !remaining.is_empty() {
-                if let Some((font, num_chars)) = self.query_best_run(remaining, script, language, &props)
+                if let Some((font, num_chars)) =
+                    self.query_best_run(remaining, script, language, &props)
                 {
                     let consumed = num_chars.max(1).min(remaining.len());
                     set.push(font, consumed);
@@ -430,8 +435,12 @@ impl<S: FontSelector, F: FnMut(FontSegment)> FontEventSink<'_, S, F> {
         let mut chars_iter = chars_vec.iter();
 
         self.selected_fonts.clear();
-        self.selector
-            .select_font(self.text, self.text_analysis, self.cluster, self.selected_fonts);
+        self.selector.select_font(
+            self.text,
+            self.text_analysis,
+            self.cluster,
+            self.selected_fonts,
+        );
 
         for (font, num_chars) in self.selected_fonts.take() {
             if num_chars == 0 {
@@ -493,14 +502,14 @@ impl<S: FontSelector, F: FnMut(FontSegment)> SegmentEventSink for FontEventSink<
 #[cfg(all(test, feature = "icu"))]
 mod tests {
     use super::*;
-    #[cfg(feature = "fontique")]
-    use alloc::rc::Rc;
-    #[cfg(feature = "fontique")]
-    use core::cell::RefCell;
     use crate::text::{
         BidiDirection, SourceElement, SourceElementKind, TextAnalysisProperties,
         TextAnalysisPropertiesProvider, TextAnalyzer,
     };
+    #[cfg(feature = "fontique")]
+    use alloc::rc::Rc;
+    #[cfg(feature = "fontique")]
+    use core::cell::RefCell;
 
     struct FixedFontSelector {
         font: Font,
@@ -521,10 +530,7 @@ mod tests {
     struct DefaultProps;
 
     impl TextAnalysisPropertiesProvider for DefaultProps {
-        fn text_analysis_properties(
-            &mut self,
-            _handle: &ElementHandle,
-        ) -> TextAnalysisProperties {
+        fn text_analysis_properties(&mut self, _handle: &ElementHandle) -> TextAnalysisProperties {
             TextAnalysisProperties::default()
         }
     }
@@ -599,7 +605,10 @@ mod tests {
 
         assert!(!font_analysis.segments.is_empty());
         assert_eq!(font_analysis.segments[0].byte_range.start, 0);
-        assert_eq!(font_analysis.segments.last().unwrap().byte_range.end, text.len());
+        assert_eq!(
+            font_analysis.segments.last().unwrap().byte_range.end,
+            text.len()
+        );
     }
 
     #[cfg(feature = "fontique")]
@@ -610,10 +619,7 @@ mod tests {
 
     #[cfg(feature = "fontique")]
     impl FontSelectionPropertiesProvider for RecordingFontSelectionPropertiesProvider {
-        fn font_selection_properties(
-            &mut self,
-            handle: &ElementHandle,
-        ) -> FontSelectionProperties {
+        fn font_selection_properties(&mut self, handle: &ElementHandle) -> FontSelectionProperties {
             self.seen.borrow_mut().push(handle.id);
             let mut props = FontSelectionProperties::default();
             props.weight = if handle.id == 0 {
@@ -659,9 +665,7 @@ mod tests {
             .unwrap();
 
         let seen = Rc::new(RefCell::new(Vec::new()));
-        let provider = RecordingFontSelectionPropertiesProvider {
-            seen: seen.clone(),
-        };
+        let provider = RecordingFontSelectionPropertiesProvider { seen: seen.clone() };
         let mut selector = FontiqueSelector::new(provider);
         let mut analyzer = FontAnalyzer::default();
         let mut font_analysis = FontAnalysis::default();
