@@ -6,6 +6,7 @@ Font independent text analysis support for shaping and layout.
 
 extern crate alloc;
 
+pub mod font;
 pub mod text;
 
 mod element;
