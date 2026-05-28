@@ -8,7 +8,9 @@ use super::{
     SourceElement, SourceElementKind, TextAnalysis, TextAnalysisProperties,
     TextAnalysisPropertiesProvider, TextSegment, WordKind,
 };
-use crate::{text::BidiControl, Element, ElementKind, ObjectHandle, Script, MAX_TEXT_LEN};
+use crate::{
+    text::BidiControl, Element, ElementKind, Language, ObjectHandle, Script, MAX_TEXT_LEN,
+};
 use alloc::vec::Vec;
 use core::ops::Range;
 use {
@@ -40,6 +42,31 @@ struct ParagraphBidiRange {
     brackets: Range<usize>,
 }
 
+#[derive(Copy, Clone, Default)]
+struct TransitionEffects {
+    reset_line_iter: bool,
+    reset_grapheme_word_iters: bool,
+    next_text_start: usize,
+}
+
+struct ScanCtx {
+    element_start: usize,
+    element_end: usize,
+    properties: TextAnalysisProperties,
+    pending_cluster: PendingCluster,
+}
+
+struct AnalyzeState {
+    scan: ScanCtx,
+    needs_bidi: bool,
+    num_objects: u32,
+    last_text_end: usize,
+    paragraph_bidi_start: usize,
+    paragraph_bracket_start: usize,
+    unresolved_script_segments: usize,
+    prev_cluster_is_paragraph_separator: bool,
+}
+
 impl TextAnalyzer {
     pub fn analyze(
         &mut self,
@@ -54,174 +81,91 @@ impl TextAnalyzer {
         if text.len() > MAX_TEXT_LEN {
             return Err(TextAnalysisError::TextExceedsMaxLen);
         }
-        let state = &mut TransientState::default();
         let mut chars = text
             .char_indices()
             .chain(Some((text.len(), ' ')))
             .enumerate();
-        let mut element_start = 0;
         // Start before the first element so all source elements, including
         // leading zero-length ones (e.g. objects/controls), are processed by
         // the same transition logic below.
-        let mut properties = TextAnalysisProperties::default();
-        let mut element_end = 0;
+        let mut state = AnalyzeState {
+            scan: ScanCtx {
+                element_start: 0,
+                element_end: 0,
+                properties: TextAnalysisProperties::default(),
+                pending_cluster: PendingCluster {
+                    attrs: ClusterAttributes::default(),
+                    range: 0..0,
+                    base_char: ' ',
+                    bidi_class: BidiClass::OTHER_NEUTRAL,
+                    bidi_bracket: None,
+                    script: Script::COMMON,
+                    lang: None,
+                },
+            },
+            needs_bidi: false,
+            num_objects: 0,
+            last_text_end: 0,
+            paragraph_bidi_start: 0,
+            paragraph_bracket_start: 0,
+            unresolved_script_segments: 0,
+            prev_cluster_is_paragraph_separator: false,
+        };
+        state.scan.pending_cluster.lang = state.scan.properties.language;
         // Build our initial iterator set
         let grapheme_breaker = icu_segmenter::GraphemeClusterSegmenter::new();
         let mut graphemes = BoundaryTracker::new(grapheme_breaker.segment_str(text), 0);
         let word_breaker =
             icu_segmenter::WordSegmenter::new_auto(WordBreakInvariantOptions::default());
         let mut words = BoundaryTracker::new(word_breaker.segment_str(text), 0);
-        let mut line_options = properties.line_break_options();
+        let mut line_options = state.scan.properties.line_break_options();
         let mut line_breaker = icu_segmenter::LineSegmenter::new_auto(line_options.get());
         let mut lines = BoundaryTracker::new(line_breaker.segment_str(text), 0);
-        let mut pending_cluster = PendingCluster {
-            attrs: ClusterAttributes::default(),
-            range: 0..0,
-            base_char: ' ',
-            bidi_class: BidiClass::OTHER_NEUTRAL,
-            bidi_bracket: None,
-            script: Script::COMMON,
-            lang: properties.language,
-        };
         while let Some((_char_idx, (byte_idx, ch))) = chars.next() {
             let char_props = parley_data::Properties::get(ch);
             // Do we need to move on to the next element?
-            if byte_idx >= element_end {
-                // Track whether we need to reset segmentation iterators
-                let mut reset_line_iter = false;
-                let mut reset_grapheme_word_iters = false;
-                pending_cluster.range.end = byte_idx;
-                // We need to skip zero length elements and objects
-                loop {
-                    if let Some((next_element, next_properties, next_len)) = self.next_element(
-                        state,
-                        property_provider,
-                        &mut elements,
-                        analysis,
-                        element_end,
-                    ) {
-                        element_start = element_end;
-                        element_end = element_end.saturating_add(next_len);
-                        // Synthesized bidi control character
-                        let mut pending_bidi = None;
-                        // Most elements flush the pending cluster so default to true
-                        let mut flush_pending = true;
-                        match next_element.kind {
-                            SourceElementKind::Object(dir) => {
-                                // Objects reset all iterators
-                                reset_line_iter = true;
-                                reset_grapheme_word_iters = true;
-                                let class = match dir {
-                                    BidiDirection::Auto => BidiClass::OTHER_NEUTRAL,
-                                    BidiDirection::Ltr => BidiClass::LEFT_TO_RIGHT,
-                                    BidiDirection::Rtl => BidiClass::RIGHT_TO_LEFT,
-                                };
-                                let handle = ObjectHandle(state.num_objects - 1);
-                                pending_bidi = Some((class, BidiItem::Object(handle)));
-                                flush_pending = true;
-                            }
-                            SourceElementKind::BidiControl(control) => match control {
-                                BidiControl::PushOverride(dir) => {
-                                    let class = match dir {
-                                        BidiOverride::Ltr => BidiClass::LEFT_TO_RIGHT_OVERRIDE,
-                                        BidiOverride::Rtl => BidiClass::RIGHT_TO_LEFT_OVERRIDE,
-                                    };
-                                    pending_bidi = Some((class, BidiItem::Control));
-                                }
-                                BidiControl::PopOverride => {
-                                    pending_bidi = Some((
-                                        BidiClass::POP_DIRECTIONAL_FORMAT,
-                                        BidiItem::Control,
-                                    ));
-                                }
-                                BidiControl::PushIsolate(dir) => {
-                                    let class = match dir {
-                                        BidiDirection::Auto => BidiClass::FIRST_STRONG_ISOLATE,
-                                        BidiDirection::Ltr => BidiClass::LEFT_TO_RIGHT_ISOLATE,
-                                        BidiDirection::Rtl => BidiClass::RIGHT_TO_LEFT_ISOLATE,
-                                    };
-                                    pending_bidi = Some((class, BidiItem::Control));
-                                }
-                                BidiControl::PopIsolate => {
-                                    pending_bidi = Some((
-                                        BidiClass::POP_DIRECTIONAL_ISOLATE,
-                                        BidiItem::Control,
-                                    ));
-                                }
-                            },
-                            SourceElementKind::SegmentationBreak => {
-                                reset_line_iter = true;
-                                reset_grapheme_word_iters = true;
-                                // The break item won't push a class so the
-                                // actual value is irrelevant
-                                pending_bidi = Some((BidiClass::OTHER_NEUTRAL, BidiItem::Break));
-                            }
-                            _ => {
-                                if next_len > 0 {
-                                    // Reset the line iterator if we forced a
-                                    // grapheme/word reset or if the properties
-                                    // changed
-                                    reset_line_iter =
-                                        reset_grapheme_word_iters || properties != next_properties;
-                                    properties = next_properties;
-                                    // We found an element that consumes
-                                    // some characters
-                                    break;
-                                }
-                                flush_pending = false;
-                            }
-                        };
-                        if flush_pending && !pending_cluster.range.is_empty() {
-                            // Advance the word iterator so we capture the
-                            // correct type
-                            words.is_boundary(byte_idx);
-                            pending_cluster
-                                .attrs
-                                .set_word_kind(WordKind::from_icu(words.iter.word_type()));
-                            pending_cluster.range.end = byte_idx;
-                            self.push_cluster(state, analysis, &pending_cluster);
-                            pending_cluster.base_char = ch;
-                            pending_cluster.range.start = byte_idx;
-                            pending_cluster.lang = properties.language;
-                        }
-                        // Handle synthesized bidi control characters. This
-                        // must be done _after_ flushing the pending cluster
-                        if let Some((class, item)) = pending_bidi {
-                            if !matches!(item, BidiItem::Break) {
-                                self.bidi_classes.push(class);
-                            }
-                            self.bidi_items.push(item);
-                        }
-                    } else {
-                        // We don't have any remaining elements; keep using
-                        // the current one until we run out of text
-                        element_end = usize::MAX;
-                        break;
-                    }
-                }
-                let next_text = if reset_grapheme_word_iters | reset_line_iter {
-                    text.get(element_start..).unwrap_or_default()
+            if byte_idx >= state.scan.element_end {
+                let mut next_word_kind = |idx: usize| {
+                    words.is_boundary(idx);
+                    WordKind::from_icu(words.iter.word_type())
+                };
+                let transition = self.process_element_boundary(
+                    &mut state,
+                    property_provider,
+                    &mut elements,
+                    analysis,
+                    byte_idx,
+                    ch,
+                    &mut next_word_kind,
+                );
+                let next_text = if transition.reset_grapheme_word_iters | transition.reset_line_iter
+                {
+                    text.get(transition.next_text_start..).unwrap_or_default()
                 } else {
                     ""
                 };
-                if reset_grapheme_word_iters {
+                if transition.reset_grapheme_word_iters {
                     graphemes = BoundaryTracker::new(
                         grapheme_breaker.segment_str(next_text),
-                        element_start,
+                        transition.next_text_start,
                     );
-                    words =
-                        BoundaryTracker::new(word_breaker.segment_str(next_text), element_start);
+                    words = BoundaryTracker::new(
+                        word_breaker.segment_str(next_text),
+                        transition.next_text_start,
+                    );
                 }
-                if reset_line_iter {
-                    line_options = properties.line_break_options();
+                if transition.reset_line_iter {
+                    line_options = state.scan.properties.line_break_options();
                     line_breaker = icu_segmenter::LineSegmenter::new_auto(line_options.get());
-                    lines =
-                        BoundaryTracker::new(line_breaker.segment_str(next_text), element_start);
+                    lines = BoundaryTracker::new(
+                        line_breaker.segment_str(next_text),
+                        transition.next_text_start,
+                    );
                 }
             }
             // Now handle the next grapheme
             if graphemes.is_boundary(byte_idx) {
-                let mut cluster = pending_cluster.clone();
+                let mut cluster = state.scan.pending_cluster.clone();
                 // Does it end a word?
                 if words.is_boundary(byte_idx) {
                     cluster
@@ -233,24 +177,17 @@ impl TextAnalyzer {
                     cluster.attrs.set_line_break();
                 }
                 cluster.range.end = byte_idx;
-                pending_cluster.range.start = byte_idx;
-                pending_cluster.attrs = ClusterAttributes::new(ch, char_props);
-                pending_cluster.bidi_class =
-                    BidiClass::from_icu4c_value(char_props.bidi_class().to_icu4c_value() as u8);
-                pending_cluster.bidi_bracket = bidi_bracket_from_icu(ch);
-                let script = script_from_icu(char_props.script());
-                pending_cluster.script = if is_real_script(script) {
-                    script
-                } else {
-                    Script::COMMON
-                };
-                pending_cluster.base_char = ch;
-                pending_cluster.lang = properties.language;
+                state.scan.pending_cluster.reset(
+                    ch,
+                    char_props,
+                    state.scan.properties.language,
+                    byte_idx,
+                );
                 if byte_idx > 0 && !cluster.range.is_empty() {
-                    self.push_cluster(state, analysis, &cluster);
+                    self.push_cluster(&mut state, analysis, &cluster);
                 }
             } else {
-                pending_cluster.attrs.update_content(ch);
+                state.scan.pending_cluster.attrs.update_content(ch);
             }
         }
         let bidi_base_level = match base_direction {
@@ -273,6 +210,189 @@ impl TextAnalyzer {
 }
 
 impl TextAnalyzer {
+    fn process_element_boundary<F>(
+        &mut self,
+        state: &mut AnalyzeState,
+        property_provider: &mut impl TextAnalysisPropertiesProvider,
+        elements: &mut impl Iterator<Item = SourceElement>,
+        analysis: &mut TextAnalysis,
+        byte_idx: usize,
+        ch: char,
+        next_word_kind: &mut F,
+    ) -> TransitionEffects
+    where
+        F: FnMut(usize) -> WordKind,
+    {
+        // Track whether we need to reset segmentation iterators.
+        let mut effects = TransitionEffects::default();
+        effects.next_text_start = state.scan.element_start;
+        state.scan.pending_cluster.range.end = byte_idx;
+
+        // We need to skip zero length elements and objects.
+        loop {
+            if let Some(next_element) = elements.next() {
+                let next_properties =
+                    property_provider.text_analysis_properties(&next_element.handle);
+                let text_start = state.scan.element_end as u32;
+                state.scan.element_start = state.scan.element_end;
+                effects.next_text_start = state.scan.element_start;
+                // Synthesized bidi control character.
+                let mut pending_bidi = None;
+                // Most elements flush the pending cluster so default to true.
+                let mut flush_pending = true;
+                let mut next_len = 0usize;
+                match next_element.kind {
+                    SourceElementKind::Text(len) => {
+                        analysis.elements.push(Element {
+                            handle: next_element.handle,
+                            kind: ElementKind::Text(len),
+                            text_start,
+                        });
+                        next_len = len as usize;
+                    }
+                    SourceElementKind::Object(dir) => {
+                        let object_handle = ObjectHandle(state.num_objects);
+                        state.num_objects += 1;
+                        analysis.elements.push(Element {
+                            handle: next_element.handle,
+                            kind: ElementKind::Object(object_handle),
+                            text_start,
+                        });
+                        // Objects reset all iterators.
+                        effects.reset_line_iter = true;
+                        effects.reset_grapheme_word_iters = true;
+                        let class = match dir {
+                            BidiDirection::Auto => BidiClass::OTHER_NEUTRAL,
+                            BidiDirection::Ltr => BidiClass::LEFT_TO_RIGHT,
+                            BidiDirection::Rtl => BidiClass::RIGHT_TO_LEFT,
+                        };
+                        pending_bidi = Some((class, BidiItem::Object(object_handle)));
+                        flush_pending = true;
+                    }
+                    SourceElementKind::StartSpan => {
+                        analysis.elements.push(Element {
+                            handle: next_element.handle,
+                            kind: ElementKind::StartSpan,
+                            text_start,
+                        });
+                        flush_pending = false;
+                    }
+                    SourceElementKind::EndSpan => {
+                        analysis.elements.push(Element {
+                            handle: next_element.handle,
+                            kind: ElementKind::EndSpan,
+                            text_start,
+                        });
+                        flush_pending = false;
+                    }
+                    SourceElementKind::Marker => {
+                        analysis.elements.push(Element {
+                            handle: next_element.handle,
+                            kind: ElementKind::Marker,
+                            text_start,
+                        });
+                        flush_pending = false;
+                    }
+                    SourceElementKind::BidiControl(control) => match control {
+                        _ => {
+                            state.needs_bidi = true;
+                        }
+                    },
+                    SourceElementKind::SegmentationBreak => {
+                        effects.reset_line_iter = true;
+                        effects.reset_grapheme_word_iters = true;
+                        // The break item won't push a class so the actual value is irrelevant.
+                        pending_bidi = Some((BidiClass::OTHER_NEUTRAL, BidiItem::Break));
+                    }
+                };
+
+                if let SourceElementKind::BidiControl(control) = next_element.kind {
+                    match control {
+                        BidiControl::PushOverride(dir) => {
+                            let class = match dir {
+                                BidiOverride::Ltr => BidiClass::LEFT_TO_RIGHT_OVERRIDE,
+                                BidiOverride::Rtl => BidiClass::RIGHT_TO_LEFT_OVERRIDE,
+                            };
+                            pending_bidi = Some((class, BidiItem::Control));
+                        }
+                        BidiControl::PopOverride => {
+                            pending_bidi =
+                                Some((BidiClass::POP_DIRECTIONAL_FORMAT, BidiItem::Control));
+                        }
+                        BidiControl::PushIsolate(dir) => {
+                            let class = match dir {
+                                BidiDirection::Auto => BidiClass::FIRST_STRONG_ISOLATE,
+                                BidiDirection::Ltr => BidiClass::LEFT_TO_RIGHT_ISOLATE,
+                                BidiDirection::Rtl => BidiClass::RIGHT_TO_LEFT_ISOLATE,
+                            };
+                            pending_bidi = Some((class, BidiItem::Control));
+                        }
+                        BidiControl::PopIsolate => {
+                            pending_bidi =
+                                Some((BidiClass::POP_DIRECTIONAL_ISOLATE, BidiItem::Control));
+                        }
+                    }
+                }
+
+                state.scan.element_end = state.scan.element_end.saturating_add(next_len);
+                if next_len > 0 {
+                    // Reset the line iterator if we forced a grapheme/word reset or if
+                    // the properties changed.
+                    effects.reset_line_iter = effects.reset_grapheme_word_iters
+                        || state.scan.properties != next_properties;
+                    state.scan.properties = next_properties;
+                    // We found an element that consumes some characters.
+                    break;
+                }
+
+                if flush_pending && !state.scan.pending_cluster.range.is_empty() {
+                    let word_kind = next_word_kind(byte_idx);
+                    self.flush_pending_cluster(
+                        state,
+                        analysis,
+                        word_kind,
+                        byte_idx,
+                        ch,
+                        state.scan.properties.language,
+                    );
+                }
+                // Handle synthesized bidi control characters. This must be done
+                // _after_ flushing the pending cluster.
+                if let Some((class, item)) = pending_bidi {
+                    if !matches!(item, BidiItem::Break) {
+                        self.bidi_classes.push(class);
+                    }
+                    self.bidi_items.push(item);
+                }
+            } else {
+                // We don't have any remaining elements; keep using the current
+                // one until we run out of text.
+                state.scan.element_end = usize::MAX;
+                break;
+            }
+        }
+
+        effects
+    }
+
+    fn flush_pending_cluster(
+        &mut self,
+        state: &mut AnalyzeState,
+        analysis: &mut TextAnalysis,
+        word_kind: WordKind,
+        byte_idx: usize,
+        next_char: char,
+        next_language: Option<Language>,
+    ) {
+        state.scan.pending_cluster.attrs.set_word_kind(word_kind);
+        state.scan.pending_cluster.range.end = byte_idx;
+        let cluster = state.scan.pending_cluster.clone();
+        self.push_cluster(state, analysis, &cluster);
+        state.scan.pending_cluster.base_char = next_char;
+        state.scan.pending_cluster.range.start = byte_idx;
+        state.scan.pending_cluster.lang = next_language;
+    }
+
     fn back_propagate_unresolved_scripts(&mut self) {
         let mut next_real_script = None;
         for item in self.bidi_items.iter_mut().rev() {
@@ -295,82 +415,9 @@ impl TextAnalyzer {
         self.text_segments.clear();
     }
 
-    fn next_element(
-        &mut self,
-        state: &mut TransientState,
-        property_provider: &mut impl TextAnalysisPropertiesProvider,
-        elements: &mut impl Iterator<Item = SourceElement>,
-        analysis: &mut TextAnalysis,
-        text_start: usize,
-    ) -> Option<(SourceElement, TextAnalysisProperties, usize)> {
-        let text_start = text_start as u32;
-        let element = elements.next()?;
-        let properties = property_provider.text_analysis_properties(&element.handle);
-        let break_shaping_before = state.break_shaping_before;
-        state.break_shaping_before = false;
-        let len = match element.kind {
-            SourceElementKind::Text(len) => {
-                analysis.elements.push(Element {
-                    handle: element.handle,
-                    kind: ElementKind::Text(len),
-                    text_start,
-                    break_shaping_before,
-                });
-                len
-            }
-            SourceElementKind::Object(..) => {
-                let object_handle = ObjectHandle(state.num_objects);
-                state.num_objects += 1;
-                analysis.elements.push(Element {
-                    handle: element.handle,
-                    kind: ElementKind::Object(object_handle),
-                    text_start,
-                    break_shaping_before,
-                });
-                0
-            }
-            SourceElementKind::StartSpan => {
-                analysis.elements.push(Element {
-                    handle: element.handle,
-                    kind: ElementKind::StartSpan,
-                    text_start,
-                    break_shaping_before,
-                });
-                0
-            }
-            SourceElementKind::EndSpan => {
-                analysis.elements.push(Element {
-                    handle: element.handle,
-                    kind: ElementKind::EndSpan,
-                    text_start,
-                    break_shaping_before,
-                });
-                0
-            }
-            SourceElementKind::BidiControl(..) => {
-                state.needs_bidi = true;
-                0
-            }
-            SourceElementKind::SegmentationBreak => {
-                state.break_shaping_before = true;
-                0
-            }
-            SourceElementKind::Marker => {
-                analysis.elements.push(Element {
-                    handle: element.handle,
-                    kind: ElementKind::Marker,
-                    text_start,
-                    break_shaping_before,
-                });
-                0
-            }
-        };
-        Some((element, properties, len as usize))
-    }
-
     fn push_cluster(
         &mut self,
-        state: &mut TransientState,
+        state: &mut AnalyzeState,
         analysis: &mut TextAnalysis,
         cluster: &PendingCluster,
     ) -> bool {
@@ -432,7 +479,7 @@ impl TextAnalyzer {
 
     fn push_bidi_char(
         &mut self,
-        state: &mut TransientState,
+        state: &mut AnalyzeState,
         ch: char,
         class: BidiClass,
         bracket: Option<BidiBracket>,
@@ -584,6 +631,30 @@ impl TextAnalyzer {
     }
 }
 
+impl PendingCluster {
+    fn reset(
+        &mut self,
+        ch: char,
+        char_props: parley_data::Properties,
+        language: Option<Language>,
+        start: usize,
+    ) {
+        self.range.start = start;
+        self.attrs = ClusterAttributes::new(ch, char_props);
+        self.bidi_class =
+            BidiClass::from_icu4c_value(char_props.bidi_class().to_icu4c_value() as u8);
+        self.bidi_bracket = bidi_bracket_from_icu(ch);
+        let script = script_from_icu(char_props.script());
+        self.script = if is_real_script(script) {
+            script
+        } else {
+            Script::COMMON
+        };
+        self.base_char = ch;
+        self.lang = language;
+    }
+}
+
 fn bidi_bracket_from_icu(ch: char) -> Option<BidiBracket> {
     let bracket = BidiMirroringGlyph::for_char(ch);
     match bracket.paired_bracket_type {
@@ -592,19 +663,6 @@ fn bidi_bracket_from_icu(ch: char) -> Option<BidiBracket> {
         BidiPairedBracketType::None => None,
         _ => None,
     }
-}
-
-/// Transient state needed during analysis.
-#[derive(Default)]
-struct TransientState {
-    break_shaping_before: bool,
-    needs_bidi: bool,
-    num_objects: u32,
-    last_text_end: usize,
-    paragraph_bidi_start: usize,
-    paragraph_bracket_start: usize,
-    unresolved_script_segments: usize,
-    prev_cluster_is_paragraph_separator: bool,
 }
 
 #[derive(Clone, Debug)]

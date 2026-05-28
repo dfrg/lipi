@@ -38,8 +38,6 @@ pub struct Element {
     pub kind: ElementKind,
     /// The beginning of this element in the source text.
     pub(crate) text_start: u32,
-    /// True if we should break shaping after the previous element.
-    pub(crate) break_shaping_before: bool,
 }
 
 impl Element {
@@ -51,10 +49,5 @@ impl Element {
             _ => 0,
         };
         start..start + len as usize
-    }
-
-    /// Returns true if the element should break a shaping run.
-    pub fn break_shaping_before(&self) -> bool {
-        self.break_shaping_before
     }
 }
