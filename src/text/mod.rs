@@ -3,33 +3,22 @@
 mod analysis;
 mod analyzer;
 mod bidi;
-mod cluster;
 mod element;
 mod properties;
 pub mod unicode;
 
 use crate::element::ElementHandle;
 use crate::{Language, Script};
-use core::ops::Range;
 
-pub use analysis::{ClusterAnalysis, Paragraph, Segment, TextAnalysis, TextSegment};
+pub use analysis::{
+    Cluster, ClusterAnalysis, ClusterAttributes, ClusterContent, Paragraph, Segment, TextAnalysis,
+    TextSegment, WordKind,
+};
 pub use analyzer::TextAnalyzer;
 pub use bidi::BidiLevel;
-pub use cluster::{Cluster, ClusterAttributes, ClusterContent, WordKind};
 pub use element::{BidiControl, SourceElement, SourceElementKind};
 pub use parlance::{BidiDirection, BidiOverride, WordBreak};
 pub use properties::LineBreak;
-
-#[derive(Clone, PartialEq, Eq, Debug)]
-struct PendingCluster {
-    attrs: ClusterAttributes,
-    range: Range<usize>,
-    base_char: char,
-    bidi_class: bidi::BidiClass,
-    bidi_bracket: Option<bidi::BidiBracket>,
-    script: Script,
-    lang: Option<Language>,
-}
 
 /// Properties that control text analysis.
 #[derive(Copy, Clone, PartialEq, Eq, Default, Debug)]
@@ -216,7 +205,7 @@ mod unicode_engine_tests {
         assert_eq!(analysis.clusters.len(), 2);
         assert_eq!(analysis.segments.len(), 1);
         assert_eq!(analysis.paragraphs.len(), 1);
-        assert_eq!(analysis.paragraphs[0].segments, 0..1);
+        assert_eq!(analysis.paragraphs[0].segments(), 0..1);
     }
 }
 
@@ -344,17 +333,20 @@ mod tests {
         let analysis = analyze(text, None);
 
         assert_eq!(analysis.paragraphs.len(), 2);
-        assert_eq!(analysis.paragraphs[0].level, 0);
-        assert_eq!(analysis.paragraphs[1].level, 1);
+        assert_eq!(analysis.paragraphs[0].bidi_level, 0);
+        assert_eq!(analysis.paragraphs[1].bidi_level, 1);
 
         // Paragraph segment ranges should partition the segment stream.
-        assert_eq!(analysis.paragraphs[0].segments.start, 0);
+        assert_eq!(analysis.paragraphs[0].segments().start, 0);
         assert_eq!(
-            analysis.paragraphs[0].segments.end,
-            analysis.paragraphs[1].segments.start
+            analysis.paragraphs[0].segments().end,
+            analysis.paragraphs[1].segments().start
         );
-        assert_eq!(analysis.paragraphs[1].segments.end, analysis.segments.len());
-        assert!(analysis.paragraphs.iter().all(|p| !p.segments.is_empty()));
+        assert_eq!(
+            analysis.paragraphs[1].segments().end,
+            analysis.segments.len()
+        );
+        assert!(analysis.paragraphs.iter().all(|p| !p.segments().is_empty()));
     }
 
     #[test]
@@ -365,8 +357,8 @@ mod tests {
         assert_eq!(analysis.paragraphs.len(), 2);
         assert!(analysis.segments.len() >= 2);
 
-        let p0 = analysis.paragraphs[0].segments.clone();
-        let p1 = analysis.paragraphs[1].segments.clone();
+        let p0 = analysis.paragraphs[0].segments();
+        let p1 = analysis.paragraphs[1].segments();
         assert_eq!(p0.start, 0);
         assert_eq!(p0.end, p1.start);
         assert_eq!(p1.end, analysis.segments.len());
@@ -384,8 +376,8 @@ mod tests {
 
         assert_eq!(ltr.paragraphs.len(), 1);
         assert_eq!(rtl.paragraphs.len(), 1);
-        assert_eq!(ltr.paragraphs[0].level, 0);
-        assert_eq!(rtl.paragraphs[0].level, 1);
+        assert_eq!(ltr.paragraphs[0].bidi_level, 0);
+        assert_eq!(rtl.paragraphs[0].bidi_level, 1);
     }
 
     #[test]
@@ -559,10 +551,12 @@ mod tests {
 
         // CRLF is a single grapheme cluster, and should still be treated as
         // a paragraph separator.
-        assert!(crlf
-            .clusters
-            .iter()
-            .any(|c| c.text_range == (1..3) && c.content() == ClusterContent::ParagraphSeparator));
+        assert!(
+            crlf.clusters
+                .iter()
+                .any(|c| c.text_range() == (1..3)
+                    && c.content() == ClusterContent::ParagraphSeparator)
+        );
         assert_eq!(crlf.paragraphs.len(), 2);
 
         // Unicode line/paragraph separators should split into two paragraphs.
@@ -656,10 +650,11 @@ mod tests {
         // Paragraph ranges must be a contiguous partition of the segment list.
         let mut segment_cursor = 0;
         for paragraph in &analysis.paragraphs {
-            assert_eq!(paragraph.segments.start, segment_cursor);
-            assert!(paragraph.segments.start <= paragraph.segments.end);
-            assert!(paragraph.segments.end <= analysis.segments.len());
-            segment_cursor = paragraph.segments.end;
+            let segments = paragraph.segments();
+            assert_eq!(segments.start, segment_cursor);
+            assert!(segments.start <= segments.end);
+            assert!(segments.end <= analysis.segments.len());
+            segment_cursor = segments.end;
         }
         assert_eq!(segment_cursor, analysis.segments.len());
 
@@ -670,7 +665,7 @@ mod tests {
                 let containing = analysis
                     .paragraphs
                     .iter()
-                    .filter(|p| p.segments.contains(&segment_idx))
+                    .filter(|p| p.segments().contains(&segment_idx))
                     .count();
                 assert_eq!(containing, 1);
             }
@@ -681,9 +676,10 @@ mod tests {
         let mut cluster_cursor = 0;
         for segment in &analysis.segments {
             if let Segment::Text(text) = segment {
-                assert!(text.clusters.start < text.clusters.end);
-                assert_eq!(text.clusters.start, cluster_cursor);
-                cluster_cursor = text.clusters.end;
+                let clusters = text.clusters();
+                assert!(clusters.start < clusters.end);
+                assert_eq!(clusters.start, cluster_cursor);
+                cluster_cursor = clusters.end;
             }
         }
         assert_eq!(cluster_cursor, analysis.clusters.len());
@@ -701,10 +697,10 @@ mod tests {
 
         assert_eq!(auto_hebrew_first.paragraphs.len(), 1);
         assert_eq!(auto_latin_first.paragraphs.len(), 1);
-        assert_eq!(auto_hebrew_first.paragraphs[0].level, 1);
-        assert_eq!(auto_latin_first.paragraphs[0].level, 0);
-        assert_eq!(forced_ltr.paragraphs[0].level, 0);
-        assert_eq!(forced_rtl.paragraphs[0].level, 1);
+        assert_eq!(auto_hebrew_first.paragraphs[0].bidi_level, 1);
+        assert_eq!(auto_latin_first.paragraphs[0].bidi_level, 0);
+        assert_eq!(forced_ltr.paragraphs[0].bidi_level, 0);
+        assert_eq!(forced_rtl.paragraphs[0].bidi_level, 1);
     }
 
     #[test]
@@ -741,7 +737,7 @@ mod tests {
                 .segments
                 .iter()
                 .filter_map(|segment| match segment {
-                    Segment::Text(text) => Some(text.clusters.len()),
+                    Segment::Text(text) => Some(text.clusters().len()),
                     Segment::Object(_, _) => None,
                 })
                 .sum::<usize>();
@@ -928,9 +924,9 @@ mod tests {
                         t.script,
                         t.language,
                         t.bidi_level,
-                        &text[analysis.clusters.text_range(t.clusters.clone()).unwrap()]
+                        &text[analysis.clusters.text_range(t.clusters()).unwrap()]
                     );
-                    for cluster in analysis.clusters.iter_range(t.clusters.clone()) {
+                    for cluster in analysis.clusters.iter_range(t.clusters()) {
                         dump_cluster(text, &cluster);
                     }
                 }
@@ -941,7 +937,7 @@ mod tests {
 
 #[allow(unused)]
 fn dump_cluster(text: &str, cluster: &Cluster) {
-    let cluster_text = &text[cluster.text_range.clone()];
+    let cluster_text = &text[cluster.text_range()];
     let content = match cluster.content() {
         ClusterContent::Text => ' ',
         ClusterContent::Emoji => 'E',

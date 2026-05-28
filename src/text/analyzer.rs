@@ -3,17 +3,17 @@
 #[cfg(feature = "icu")]
 use super::unicode::IcuUnicodeEngine;
 use super::{
+    analysis::PendingCluster,
     bidi::{self, BidiBracket, BidiClass},
     is_real_script,
-    unicode::{
-        CharProperties, UnicodeEngine, UnicodeSegmentationContext, UnicodeSegmentationCursor,
-    },
-    BidiDirection, BidiOverride, ClusterAttributes, Paragraph, PendingCluster, Segment,
-    SourceElement, SourceElementKind, TextAnalysis, TextAnalysisProperties,
-    TextAnalysisPropertiesProvider, TextSegment, WordKind,
+    unicode::{UnicodeEngine, UnicodeSegmentationContext, UnicodeSegmentationCursor},
+    BidiDirection, BidiOverride, ClusterAttributes, Paragraph, Segment, SourceElement,
+    SourceElementKind, TextAnalysis, TextAnalysisProperties, TextAnalysisPropertiesProvider,
+    TextSegment, WordKind,
 };
 use crate::{
-    text::BidiControl, Element, ElementKind, Language, ObjectHandle, Script, MAX_TEXT_LEN,
+    range::Range32, text::BidiControl, Element, ElementKind, Language, ObjectHandle, Script,
+    MAX_TEXT_LEN,
 };
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -22,7 +22,7 @@ use core::ops::Range;
 #[derive(Clone, Debug)]
 pub enum TextAnalysisError {
     /// The input text was larger than the maximum length.
-    TextExceedsMaxLen,
+    ExceededMaxTextLength,
 }
 
 /// Context and scratch memory for text analysis.
@@ -60,7 +60,7 @@ struct AnalyzeState {
     scan: ScanCtx,
     needs_bidi: bool,
     num_objects: u32,
-    last_text_end: usize,
+    last_text_end: u32,
     paragraph_bidi_start: usize,
     paragraph_bracket_start: usize,
     unresolved_script_segments: usize,
@@ -102,7 +102,7 @@ impl TextAnalyzer {
         self.clear();
         analysis.clear();
         if text.len() > MAX_TEXT_LEN {
-            return Err(TextAnalysisError::TextExceedsMaxLen);
+            return Err(TextAnalysisError::ExceededMaxTextLength);
         }
         let mut chars = text
             .char_indices()
@@ -118,7 +118,7 @@ impl TextAnalyzer {
                 properties: TextAnalysisProperties::default(),
                 pending_cluster: PendingCluster {
                     attrs: ClusterAttributes::default(),
-                    range: 0..0,
+                    range: Range32::new(0, 0),
                     base_char: ' ',
                     bidi_class: BidiClass::OTHER_NEUTRAL,
                     bidi_bracket: None,
@@ -202,7 +202,7 @@ impl TextAnalyzer {
                 }) {
                     cluster.attrs.set_line_break();
                 }
-                cluster.range.end = byte_idx;
+                cluster.range.end = byte_idx as u32;
                 state.scan.pending_cluster.reset(
                     ch,
                     char_props,
@@ -252,7 +252,7 @@ impl TextAnalyzer {
         // Track whether we need to reset segmentation iterators.
         let mut effects = TransitionEffects::default();
         effects.next_text_start = state.scan.element_start;
-        state.scan.pending_cluster.range.end = byte_idx;
+        state.scan.pending_cluster.range.end = byte_idx as u32;
 
         // We need to skip zero length elements and objects.
         loop {
@@ -411,11 +411,11 @@ impl TextAnalyzer {
         next_language: Option<Language>,
     ) {
         state.scan.pending_cluster.attrs.set_word_kind(word_kind);
-        state.scan.pending_cluster.range.end = byte_idx;
+        state.scan.pending_cluster.range.end = byte_idx as u32;
         let cluster = state.scan.pending_cluster.clone();
         self.push_cluster(state, analysis, &cluster);
         state.scan.pending_cluster.base_char = next_char;
-        state.scan.pending_cluster.range.start = byte_idx;
+        state.scan.pending_cluster.range.start = byte_idx as u32;
         state.scan.pending_cluster.lang = next_language;
     }
 
@@ -477,25 +477,24 @@ impl TextAnalyzer {
                 && !cluster_is_paragraph_separator
                 && !state.prev_cluster_is_paragraph_separator
             {
-                if let Some(merged) = merge_scripts(last_segment.script, cluster.script) {
-                    let was_unresolved = !is_real_script(last_segment.script);
-                    last_segment.script = merged;
-                    if was_unresolved && is_real_script(merged) {
+                if let Some(merged) = ScriptMerge::new(last_segment.script, cluster.script) {
+                    last_segment.script = merged.script;
+                    if merged.prev_was_unresolved && merged.merged_is_real {
                         state.unresolved_script_segments =
                             state.unresolved_script_segments.saturating_sub(1);
                     }
-                    last_segment.clusters.end = cluster_end;
+                    last_segment.clusters.end = cluster_end as u32;
                     state.prev_cluster_is_paragraph_separator = cluster_is_paragraph_separator;
                     return true;
                 }
             }
         }
-        self.bidi_items.push(BidiItem::Text(TextSegment {
-            script: cluster.script,
-            language: cluster.lang,
-            bidi_level: 0,
-            clusters: cluster_start..cluster_end,
-        }));
+        self.bidi_items.push(BidiItem::Text(TextSegment::new(
+            cluster.script,
+            cluster.lang,
+            0,
+            cluster_start..cluster_end,
+        )));
         if !is_real_script(cluster.script) {
             state.unresolved_script_segments += 1;
         }
@@ -547,10 +546,10 @@ impl TextAnalyzer {
                     &mut force_break,
                 );
                 let segment_end = analysis.segments.len();
-                analysis.paragraphs.push(Paragraph {
-                    level: bidi.base_level(),
-                    segments: segment_start..segment_end,
-                });
+                analysis.paragraphs.push(Paragraph::new(
+                    bidi.base_level(),
+                    segment_start..segment_end,
+                ));
             }
         }
 
@@ -558,7 +557,8 @@ impl TextAnalyzer {
         for segment in analysis.segments.iter() {
             if let Segment::Text(segment) = segment {
                 if segment.bidi_level & 1 != 0 {
-                    analysis.clusters.set_rtl(&segment.clusters);
+                    let clusters = segment.clusters.start as usize..segment.clusters.end as usize;
+                    analysis.clusters.set_rtl(&clusters);
                 }
             }
         }
@@ -599,7 +599,7 @@ impl TextAnalyzer {
                     *item_ix += 1;
                 }
                 BidiItem::Text(segment) => {
-                    let count = segment.clusters.len();
+                    let count = (segment.clusters.end - segment.clusters.start) as usize;
                     if remaining_levels.len() < count {
                         break;
                     }
@@ -628,7 +628,7 @@ impl TextAnalyzer {
                     // This is the count of clusters, so sync up while skipping
                     // replacement clusters
                     for (i, level) in text_levels.iter().copied().enumerate() {
-                        let cluster_idx = segment.clusters.start + i;
+                        let cluster_idx = segment.clusters.start as usize + i;
                         if level != segment.bidi_level {
                             if !merged && i == 0 {
                                 // If we didn't merge and this is the first
@@ -637,10 +637,10 @@ impl TextAnalyzer {
                             } else {
                                 segments.push(Segment::Text(segment.clone()));
                                 segment.bidi_level = level;
-                                segment.clusters.start = cluster_idx;
+                                segment.clusters.start = cluster_idx as u32;
                             }
                         }
-                        segment.clusters.end = cluster_idx + 1;
+                        segment.clusters.end = (cluster_idx + 1) as u32;
                     }
                     remaining_levels = rest;
                     *item_ix += 1;
@@ -657,29 +657,6 @@ impl TextAnalyzer {
     }
 }
 
-impl PendingCluster {
-    fn reset(
-        &mut self,
-        ch: char,
-        char_props: CharProperties,
-        language: Option<Language>,
-        start: usize,
-    ) {
-        self.range.start = start;
-        self.attrs = ClusterAttributes::new(ch, char_props);
-        self.bidi_class = char_props.bidi_class;
-        self.bidi_bracket = char_props.bidi_bracket;
-        let script = char_props.script;
-        self.script = if is_real_script(script) {
-            script
-        } else {
-            Script::COMMON
-        };
-        self.base_char = ch;
-        self.lang = language;
-    }
-}
-
 #[derive(Clone, Debug)]
 enum BidiItem {
     Control,
@@ -688,15 +665,49 @@ enum BidiItem {
     Break,
 }
 
-fn merge_scripts(prev: Script, next: Script) -> Option<Script> {
-    if prev == next {
-        Some(next)
-    } else {
-        match (is_real_script(prev), is_real_script(next)) {
-            (false, false) => Some(next),
-            (true, false) => Some(prev),
-            (false, true) => Some(next),
-            (true, true) => None,
+struct ScriptMerge {
+    // Script chosen for the merged segment.
+    script: Script,
+    // True when the previous segment script was unresolved (Common/Inherited/Unknown).
+    prev_was_unresolved: bool,
+    // True when the merged script resolves to a real script.
+    merged_is_real: bool,
+}
+
+impl ScriptMerge {
+    fn new(prev: Script, next: Script) -> Option<Self> {
+        let prev_is_real = is_real_script(prev);
+        let next_is_real = is_real_script(next);
+        if prev == next {
+            // Same script already, so the merge is always valid.
+            Some(Self {
+                script: next,
+                prev_was_unresolved: !prev_is_real,
+                merged_is_real: prev_is_real,
+            })
+        } else {
+            match (prev_is_real, next_is_real) {
+                // Both unresolved: keep flowing the latest unresolved script.
+                (false, false) => Some(Self {
+                    script: next,
+                    prev_was_unresolved: true,
+                    merged_is_real: false,
+                }),
+                // Keep an existing resolved script when the new one is unresolved.
+                (true, false) => Some(Self {
+                    script: prev,
+                    prev_was_unresolved: false,
+                    merged_is_real: true,
+                }),
+                // Resolve from unresolved -> resolved when we finally see a real script.
+                (false, true) => Some(Self {
+                    script: next,
+                    prev_was_unresolved: true,
+                    merged_is_real: true,
+                }),
+                // Conflicting resolved scripts must remain separate segments.
+                (true, true) => None,
+            }
         }
     }
 }

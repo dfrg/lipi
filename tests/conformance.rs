@@ -36,6 +36,20 @@ fn parse_level_list(input: &str) -> Vec<String> {
     input.split_whitespace().map(str::to_owned).collect()
 }
 
+fn resolve_trailing_neutrals(levels: &mut [u8], classes: &[BidiClass], base_level: u8) {
+    for i in (0..classes.len()).rev() {
+        let class = classes[i];
+        if is_removed_by_x9(class) {
+            continue;
+        }
+        if needs_trailing_neutral_reset(class) {
+            levels[i] = base_level;
+        } else {
+            break;
+        }
+    }
+}
+
 fn test_data_lines(path: &str) -> impl Iterator<Item = String> {
     let file = File::open(path).unwrap();
     let reader = BufReader::new(file);
@@ -145,9 +159,9 @@ impl TestState {
             .filter_map(|(i, ch)| bidi_bracket_from_icu(ch).map(|b| (i, ch, b)))
             .collect::<Vec<_>>();
         self.resolver.resolve(&classes, &brackets, input_base_level);
-        self.resolver.resolve_trailing_neutrals(&classes);
         let test_base_level = self.resolver.base_level();
-        let test_levels = self.resolver.levels();
+        let mut test_levels = self.resolver.levels().to_vec();
+        resolve_trailing_neutrals(&mut test_levels, &classes, test_base_level);
         let test_levels_str = test_levels
             .iter()
             .enumerate()

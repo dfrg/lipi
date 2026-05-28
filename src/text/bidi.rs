@@ -205,29 +205,6 @@ impl BidiResolver {
         }
     }
 
-    /// Optional post-processing step that resets trailing neutrals and isolate
-    /// formatting characters to the paragraph base level.
-    ///
-    /// This should generally be applied after line breaking and is therefore
-    /// not part of the default paragraph-level `resolve` flow.
-    pub(crate) fn resolve_trailing_neutrals(&mut self, initial_types: &[BidiClass]) {
-        let len = initial_types.len();
-        for i in (0..len).rev() {
-            let t = initial_types[i];
-            if is_removed_by_x9(t) {
-                continue;
-            }
-            if t == BidiClass::WHITE_SPACE
-                || is_isolate_initiator(t)
-                || t == BidiClass::POP_DIRECTIONAL_ISOLATE
-            {
-                self.levels[i] = self.base_level;
-            } else {
-                break;
-            }
-        }
-    }
-
     fn default_level(types: &[BidiClass]) -> u8 {
         let mut isolates = 0;
         for ty in types {
@@ -803,6 +780,12 @@ pub(crate) fn needs_bidi_resolution(bidi_class: BidiClass) -> bool {
     bidi_class.mask() & BIDI_MASK != 0
 }
 
+/// Returns whether a bidi class should be eligible for trailing neutral reset
+/// to paragraph base level before visual reordering.
+pub(crate) fn needs_trailing_neutral_reset(bidi_class: BidiClass) -> bool {
+    bidi_class.mask() & RESET_MASK != 0
+}
+
 const OVERRIDE_MASK: u32 = BidiClass::RIGHT_TO_LEFT_EMBEDDING.mask()
     | BidiClass::LEFT_TO_RIGHT_EMBEDDING.mask()
     | BidiClass::RIGHT_TO_LEFT_OVERRIDE.mask()
@@ -820,7 +803,7 @@ const BIDI_MASK: u32 = EXPLICIT_MASK
     | BidiClass::RIGHT_TO_LEFT.mask()
     | BidiClass::ARABIC_LETTER.mask()
     | BidiClass::ARABIC_NUMBER.mask();
-const _RESET_MASK: u32 =
+const RESET_MASK: u32 =
     ISOLATE_MASK | BidiClass::POP_DIRECTIONAL_ISOLATE.mask() | BidiClass::WHITE_SPACE.mask();
 
 fn is_isolate_initiator(ty: BidiClass) -> bool {
@@ -832,7 +815,7 @@ pub(crate) fn is_removed_by_x9(ty: BidiClass) -> bool {
 }
 
 pub(crate) fn _is_reset(ty: BidiClass) -> bool {
-    ty.mask() & _RESET_MASK != 0
+    ty.mask() & RESET_MASK != 0
 }
 
 fn find_limit(types: &[BidiClass], offset: usize, ty: BidiClass) -> usize {
