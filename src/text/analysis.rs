@@ -160,11 +160,6 @@ impl ClusterAnalysis {
 
 impl ClusterAnalysis {
     pub(super) fn push(&mut self, cluster: &PendingCluster) {
-        println!(
-            "pushing cluster with char {:?}, text {:?}",
-            cluster.base_char,
-            cluster.range.clone()
-        );
         self.flags.push(cluster.attrs);
         self.ends.push((cluster.range.end as u32) << 2);
     }

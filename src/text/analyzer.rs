@@ -55,31 +55,16 @@ impl TextAnalyzer {
             return Err(TextAnalysisError::TextExceedsMaxLen);
         }
         let state = &mut TransientState::default();
-        fn real_script(s: icu_properties::props::Script) -> bool {
-            use icu_properties::props::Script;
-            !matches!(s, Script::Common | Script::Unknown | Script::Inherited)
-        }
-        let initial_script = text
-            .chars()
-            .map(|c| parley_data::Properties::get(c).script())
-            .find(|s| real_script(*s))
-            .map(|s| script_from_icu(s))
-            .unwrap_or(Script::from_bytes(*b"Latn"));
         let mut chars = text
             .char_indices()
             .chain(Some((text.len(), ' ')))
             .enumerate();
         let mut element_start = 0;
-        // Read the first element
-        let (_, mut properties, mut element_end) = self
-            .next_element(
-                state,
-                property_provider,
-                &mut elements,
-                analysis,
-                element_start,
-            )
-            .unwrap_or_else(|| (Default::default(), Default::default(), usize::MAX));
+        // Start before the first element so all source elements, including
+        // leading zero-length ones (e.g. objects/controls), are processed by
+        // the same transition logic below.
+        let mut properties = TextAnalysisProperties::default();
+        let mut element_end = 0;
         // Build our initial iterator set
         let grapheme_breaker = icu_segmenter::GraphemeClusterSegmenter::new();
         let mut graphemes = BoundaryTracker::new(grapheme_breaker.segment_str(text), 0);
@@ -93,14 +78,13 @@ impl TextAnalyzer {
             attrs: ClusterAttributes::default(),
             range: 0..0,
             base_char: ' ',
-            script: initial_script,
+            bidi_class: BidiClass::OTHER_NEUTRAL,
+            bidi_bracket: None,
+            script: Script::COMMON,
             lang: properties.language,
         };
         while let Some((_char_idx, (byte_idx, ch))) = chars.next() {
             let char_props = parley_data::Properties::get(ch);
-            if byte_idx == 0 {
-                pending_cluster.script = script_from_icu(char_props.script());
-            }
             // Do we need to move on to the next element?
             if byte_idx >= element_end {
                 // Track whether we need to reset segmentation iterators
@@ -188,7 +172,6 @@ impl TextAnalyzer {
                             }
                         };
                         if flush_pending && !pending_cluster.range.is_empty() {
-                            println!("flushing pending with range {:?}", pending_cluster.range);
                             // Advance the word iterator so we capture the
                             // correct type
                             words.is_boundary(byte_idx);
@@ -252,7 +235,15 @@ impl TextAnalyzer {
                 cluster.range.end = byte_idx;
                 pending_cluster.range.start = byte_idx;
                 pending_cluster.attrs = ClusterAttributes::new(ch, char_props);
-                pending_cluster.script = script_from_icu(char_props.script());
+                pending_cluster.bidi_class =
+                    BidiClass::from_icu4c_value(char_props.bidi_class().to_icu4c_value() as u8);
+                pending_cluster.bidi_bracket = bidi_bracket_from_icu(ch);
+                let script = script_from_icu(char_props.script());
+                pending_cluster.script = if is_real_script(script) {
+                    script
+                } else {
+                    Script::COMMON
+                };
                 pending_cluster.base_char = ch;
                 pending_cluster.lang = properties.language;
                 if byte_idx > 0 && !cluster.range.is_empty() {
@@ -273,12 +264,28 @@ impl TextAnalyzer {
                 brackets: state.paragraph_bracket_start..self.bidi_brackets.len(),
             });
         }
+        if state.unresolved_script_segments != 0 {
+            self.back_propagate_unresolved_scripts();
+        }
         self.handle_bidi(analysis, bidi_base_level);
         Ok(())
     }
 }
 
 impl TextAnalyzer {
+    fn back_propagate_unresolved_scripts(&mut self) {
+        let mut next_real_script = None;
+        for item in self.bidi_items.iter_mut().rev() {
+            if let BidiItem::Text(segment) = item {
+                if is_real_script(segment.script) {
+                    next_real_script = Some(segment.script);
+                } else if let Some(script) = next_real_script {
+                    segment.script = script;
+                }
+            }
+        }
+    }
+
     fn clear(&mut self) {
         self.bidi.clear();
         self.bidi_classes.clear();
@@ -373,11 +380,7 @@ impl TextAnalyzer {
         let paragraph_bidi_start = state.paragraph_bidi_start;
         let cluster_start = analysis.clusters.len();
         analysis.clusters.push(cluster);
-        self.push_bidi_char(
-            state,
-            cluster.base_char,
-            parley_data::Properties::get(cluster.base_char),
-        );
+        self.push_bidi_char(state, cluster.base_char, cluster.bidi_class, cluster.bidi_bracket);
         let cluster_end = analysis.clusters.len();
         let cluster_is_paragraph_separator = cluster.attrs.is_paragraph_separator();
         if cluster_is_paragraph_separator {
@@ -397,7 +400,12 @@ impl TextAnalyzer {
                 && !state.prev_cluster_is_paragraph_separator
             {
                 if let Some(merged) = merge_scripts(last_segment.script, cluster.script) {
+                    let was_unresolved = !is_real_script(last_segment.script);
                     last_segment.script = merged;
+                    if was_unresolved && is_real_script(merged) {
+                        state.unresolved_script_segments =
+                            state.unresolved_script_segments.saturating_sub(1);
+                    }
                     last_segment.clusters.end = cluster_end;
                     state.prev_cluster_is_paragraph_separator = cluster_is_paragraph_separator;
                     return true;
@@ -410,6 +418,9 @@ impl TextAnalyzer {
             bidi_level: 0,
             clusters: cluster_start..cluster_end,
         }));
+        if !is_real_script(cluster.script) {
+            state.unresolved_script_segments += 1;
+        }
         state.prev_cluster_is_paragraph_separator = cluster_is_paragraph_separator;
         true
     }
@@ -418,14 +429,13 @@ impl TextAnalyzer {
         &mut self,
         state: &mut TransientState,
         ch: char,
-        props: parley_data::Properties,
+        class: BidiClass,
+        bracket: Option<BidiBracket>,
     ) {
-        println!("pushing bidi char {ch:?}");
-        let class = BidiClass::from_icu4c_value(props.bidi_class().to_icu4c_value() as u8);
         let start = self.bidi_classes.len();
         let para_local_start = start - state.paragraph_bidi_start;
         state.needs_bidi = state.needs_bidi || bidi::needs_bidi_resolution(class);
-        if let Some(bracket) = bidi_bracket_from_icu(ch) {
+        if let Some(bracket) = bracket {
             self.bidi_brackets.push((para_local_start, ch, bracket));
         }
         self.bidi_classes.push(class);
@@ -465,9 +475,6 @@ impl TextAnalyzer {
                 });
             }
         }
-
-        println!("bidi_classes = {:?}", self.bidi_classes);
-        println!("segments = {:?}", analysis.segments);
 
         // Propagate RTL flag to affected clusters.
         for segment in analysis.segments.iter() {
@@ -591,6 +598,7 @@ struct TransientState {
     last_text_end: usize,
     paragraph_bidi_start: usize,
     paragraph_bracket_start: usize,
+    unresolved_script_segments: usize,
     prev_cluster_is_paragraph_separator: bool,
 }
 
